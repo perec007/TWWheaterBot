@@ -1,0 +1,53 @@
+# Docker Compose configuration for Telegram Weather Bot
+# Run with: docker-compose up -d
+
+version: '3.8'
+
+services:
+  weather-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paragliding-weather-bot
+    restart: unless-stopped
+    
+    # Environment variables from .env file
+    env_file:
+      - .env
+    
+    # Alternative: specify environment variables directly
+    # environment:
+    #   - BOT_TOKEN=${BOT_TOKEN}
+    #   - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+    #   - VISUALCROSSING_API_KEY=${VISUALCROSSING_API_KEY}
+    #   - TIMEZONE=${TIMEZONE:-Europe/Moscow}
+    #   - POLLING_INTERVAL_MINUTES=${POLLING_INTERVAL_MINUTES:-30}
+    #   - API_REQUEST_DELAY_SECONDS=${API_REQUEST_DELAY_SECONDS:-2}
+    #   - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    #   - DATABASE_PATH=/app/data/weather_bot.db
+    
+    # Volume for persistent database storage
+    volumes:
+      - weather_bot_data:/app/data
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+# Named volume for database persistence
+volumes:
+  weather_bot_data:
+    driver: local
