@@ -369,43 +369,68 @@ class Notifier:
             now
         )
         
-        # Send cancellation notifications
-        for window in cancelled_windows:
-            await self._send_window_cancelled_notification(location, window)
-            logger.debug(f"Sent cancellation for window {window.date} {window.start_hour}:00-{window.end_hour}:00")
-        
         # Find new windows (not yet notified)
         notified_keys = set()
         for w in notified_windows:
             notified_keys.add((w.date, w.start_hour, w.end_hour, getattr(w, "source", "both")))
         
-        # Find truly new windows
         new_windows = []
         for window_info in result.flyable_windows:
             key = (window_info.date, window_info.start_hour, window_info.end_hour, getattr(window_info, "source", "both"))
             if key not in notified_keys:
                 new_windows.append(window_info)
         
-        # Send notification for new windows
-        if new_windows:
-            await self._send_new_windows_notification(location, new_windows, result)
-            
-            # Mark these windows as notified in DB
-            # We need to find the DB records for these windows
-            active_windows = await self.db.get_active_flyable_windows(location.id)
-            for db_window in active_windows:
-                for new_w in new_windows:
-                    if (db_window.date == new_w.date and
-                        db_window.start_hour == new_w.start_hour and
-                        db_window.end_hour == new_w.end_hour and
-                        getattr(db_window, "source", "both") == getattr(new_w, "source", "both") and
-                        not db_window.notified):
-                        await self.db.mark_window_notified(db_window.id, now)
-            
-            logger.info(f"🪂 {location.name}: {len(new_windows)} new flyable window(s)")
+        # Send one combined message for new and/or cancelled windows
+        if new_windows or cancelled_windows:
+            await self._send_windows_update_notification(
+                location, new_windows, cancelled_windows, result
+            )
+            if new_windows:
+                active_windows = await self.db.get_active_flyable_windows(location.id)
+                for db_window in active_windows:
+                    for new_w in new_windows:
+                        if (db_window.date == new_w.date and
+                            db_window.start_hour == new_w.start_hour and
+                            db_window.end_hour == new_w.end_hour and
+                            getattr(db_window, "source", "both") == getattr(new_w, "source", "both") and
+                            not db_window.notified):
+                            await self.db.mark_window_notified(db_window.id, now)
+            logger.info(
+                f"🪂 {location.name}: {len(new_windows)} new, {len(cancelled_windows)} cancelled"
+            )
         
         # Update weather status
         await self._update_weather_status(location, result, forecast, current_windows)
+    
+    async def _send_windows_update_notification(
+        self,
+        location: Location,
+        new_windows: List[FlyableWindowInfo],
+        cancelled_windows: List[FlyableWindow],
+        result: FullForecastAnalysis
+    ) -> None:
+        """Send one combined notification for new and/or cancelled flyable windows."""
+        try:
+            message = MessageTemplates.format_windows_update_message(
+                location=location,
+                new_windows=new_windows,
+                cancelled_windows=cancelled_windows,
+                total_windows=len(result.flyable_windows),
+                timezone=self.timezone
+            )
+            if not message:
+                return
+            await self.bot.send_message(
+                chat_id=location.chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            logger.debug(
+                f"Sent windows update to chat {location.chat_id}: "
+                f"{len(new_windows)} new, {len(cancelled_windows)} cancelled"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to send windows update notification: {e}")
     
     async def _send_new_windows_notification(
         self,
@@ -413,7 +438,7 @@ class Notifier:
         new_windows: List[FlyableWindowInfo],
         result: FullForecastAnalysis
     ) -> None:
-        """Send notification about new flyable windows."""
+        """Send notification about new flyable windows (legacy, use _send_windows_update_notification)."""
         try:
             settings = await self.db.get_chat_settings(location.chat_id)
             

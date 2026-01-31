@@ -129,10 +129,10 @@ class CommandHandlers:
         Handle /help command.
         Sends help message with command list and wind directions compass.
         """
-        message = MessageTemplates.format_help_message()
+        message = MessageTemplates.format_help_message_html()
         await update.message.reply_text(
             message,
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.HTML,
         )
     
     async def list_locations_command(
@@ -180,7 +180,7 @@ class CommandHandlers:
         if not locations:
             await update.message.reply_text(
                 "📍 Нет настроенных локаций\\.\n\n"
-                "Используйте /set\\_config для добавления локаций\\.",
+                "Используйте /set\\_config\\_locations для добавления локаций\\.",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return
@@ -190,24 +190,28 @@ class CommandHandlers:
             parse_mode=ParseMode.MARKDOWN_V2
         )
         
+        locations_results = []
+        errors = []
         for location in locations:
             try:
                 result = await self.notifier.get_location_status(location)
                 if result:
-                    await self.notifier.send_status_message(
-                        chat.id, location, result
-                    )
+                    locations_results.append((location, result))
                 else:
-                    await update.message.reply_text(
-                        f"❌ Не удалось получить данные для *{MessageTemplates.escape_markdown(location.name)}*",
-                        parse_mode=ParseMode.MARKDOWN_V2
-                    )
+                    errors.append((location.name, "Нет данных"))
             except Exception as e:
                 logger.error(f"Error getting status for {location.name}: {e}")
-                await update.message.reply_text(
-                    f"❌ Ошибка при проверке *{MessageTemplates.escape_markdown(location.name)}*: {MessageTemplates.escape_markdown(str(e))}",
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
+                errors.append((location.name, str(e)))
+        
+        message = MessageTemplates.format_combined_status_message(
+            locations_results=locations_results,
+            errors=errors,
+            timezone=self.notifier.timezone
+        )
+        await update.message.reply_text(
+            message,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
     
     async def check_command(
         self, 
@@ -228,7 +232,7 @@ class CommandHandlers:
         if not locations:
             await update.message.reply_text(
                 "📍 Нет настроенных локаций\\.\n\n"
-                "Используйте /set\\_config для добавления локаций\\.",
+                "Используйте /set\\_config\\_locations для добавления локаций\\.",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return
@@ -280,7 +284,7 @@ class CommandHandlers:
         if not locations:
             await update.message.reply_text(
                 "📍 Нет настроенных локаций\\.\n\n"
-                "Используйте /set\\_config для добавления локаций\\.",
+                "Используйте /set\\_config\\_locations для добавления локаций\\.",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
             return
@@ -342,7 +346,7 @@ class CommandHandlers:
         context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """
-        Handle /get_config command.
+        Handle /get_config_locations command.
         Shows current configuration for all locations.
         """
         if not await self._is_authorized(update, context):
@@ -355,7 +359,7 @@ class CommandHandlers:
         if not locations:
             await update.message.reply_text(
                 "📍 Нет настроенных локаций\\.\n\n"
-                "Используйте /set\\_config для добавления локаций\\.",
+                "Используйте /set\\_config\\_locations для добавления локаций\\.",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return
@@ -366,7 +370,36 @@ class CommandHandlers:
                 message,
                 parse_mode=ParseMode.MARKDOWN_V2
             )
-    
+
+    async def get_config_bot_command(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """
+        Handle /get_config_bot command.
+        Shows current bot TOML (API keys, timezone, etc.). Admin only.
+        """
+        if update.effective_user.id not in Config.ADMIN_USER_IDS:
+            await update.message.reply_text(
+                "⛔ Только администраторы бота могут просматривать настройки бота.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        current = await self.db.get_bot_config()
+        if not current or not current.strip():
+            await update.message.reply_text(
+                "⚙️ Настройки бота ещё не заданы (будут заполнены при первом запуске из .env).",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        escaped = MessageTemplates.escape_html(current)
+        await update.message.reply_text(
+            f"⚙️ <b>Настройки бота (TOML)</b>\n\n<pre>{escaped}</pre>\n"
+            "Изменить: /set_config_bot",
+            parse_mode=ParseMode.HTML
+        )
+
     async def weather_command(
         self, 
         update: Update, 
@@ -387,7 +420,7 @@ class CommandHandlers:
         if not locations:
             await update.message.reply_text(
                 "📍 Нет настроенных локаций\\.\n\n"
-                "Используйте /set\\_config для добавления локаций\\.",
+                "Используйте /set\\_config\\_locations для добавления локаций\\.",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return

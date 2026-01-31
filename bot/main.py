@@ -5,10 +5,13 @@ Initializes all components and starts the bot.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from datetime import datetime
+from pathlib import Path
 
+import toml
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -20,7 +23,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 
-from .config import Config
+from .config import Config, DEFAULT_DATABASE_PATH
 from .database import Database
 from .weather import OpenWeatherClient, VisualCrossingClient
 from .notifications import Notifier
@@ -47,28 +50,51 @@ class WeatherBot:
     async def initialize(self) -> None:
         """
         Initialize all bot components.
+        Bot config (API keys, timezone, etc.) is loaded from TOML in DB; if empty, seeded from .env.
         """
         logger.debug("Initializing Weather Bot...")
         
-        # Setup logging
-        Config.setup_logging()
+        # Ensure data directory exists (use env/default path before DB config is loaded)
+        db_path = os.getenv("DATABASE_PATH", DEFAULT_DATABASE_PATH)
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Validate configuration
+        # Initialize database and load bot config from TOML in DB
+        self.db = Database(db_path)
+        await self.db.connect()
+        
+        bot_config_toml = await self.db.get_bot_config()
+        if not bot_config_toml or not bot_config_toml.strip():
+            # First run: seed from .env and save to DB
+            default_config = {
+                "openweather_api_key": os.getenv("OPENWEATHER_API_KEY", ""),
+                "visualcrossing_api_key": os.getenv("VISUALCROSSING_API_KEY", ""),
+                "timezone": os.getenv("TIMEZONE", "UTC"),
+                "polling_interval_minutes": int(os.getenv("POLLING_INTERVAL_MINUTES", "30") or "30"),
+                "api_request_delay_seconds": float(os.getenv("API_REQUEST_DELAY_SECONDS", "2") or "2"),
+                "log_level": os.getenv("LOG_LEVEL", "INFO") or "INFO",
+                "database_path": os.getenv("DATABASE_PATH", DEFAULT_DATABASE_PATH) or DEFAULT_DATABASE_PATH,
+                "admin_user_ids": [
+                    int(uid.strip()) for uid in (os.getenv("ADMIN_USER_IDS", "") or "").split(",")
+                    if uid.strip().isdigit()
+                ],
+                "debug_mode": (os.getenv("DEBUG_MODE", "false") or "false").lower() in ("true", "1", "yes"),
+            }
+            await self.db.set_bot_config(toml.dumps(default_config))
+            Config.set_runtime_config(default_config)
+        else:
+            parsed = toml.loads(bot_config_toml)
+            Config.set_runtime_config(parsed)
+        
+        # Now setup logging and validate (Config is from TOML)
+        Config.setup_logging()
         errors = Config.validate()
         if errors:
             for error in errors:
                 logger.error(f"Config error: {error}")
-            raise ValueError("Invalid configuration. Check .env file.")
+            raise ValueError("Invalid configuration. Check bot config (TOML in DB) or .env for first run.")
         
-        # Ensure data directory exists
         Config.ensure_data_dir()
-        
-        # Get timezone
         timezone = Config.get_timezone()
-        
-        # Initialize database
-        self.db = Database(Config.DATABASE_PATH)
-        await self.db.connect()
         
         # Initialize weather API clients
         self.openweather = OpenWeatherClient(Config.OPENWEATHER_API_KEY)
@@ -103,6 +129,10 @@ class WeatherBot:
         cmd_handlers = CommandHandlers(self.db, self.notifier)
         config_handler = ConfigHandler(self.db)
         
+        # Conversation handlers first so /set_config_locations and /set_config_bot are always caught
+        self.application.add_handler(config_handler.get_conversation_handler())
+        self.application.add_handler(config_handler.get_conversation_handler_bot())
+        
         # Add command handlers
         self.application.add_handler(
             CommandHandler("start", cmd_handlers.start_command)
@@ -123,15 +153,16 @@ class WeatherBot:
             CommandHandler("weather", cmd_handlers.weather_command)
         )
         self.application.add_handler(
-            CommandHandler("get_config", cmd_handlers.get_config_command)
+            CommandHandler("get_config_locations", cmd_handlers.get_config_command)
         )
         self.application.add_handler(
             CommandHandler("flywindow", cmd_handlers.flywindow_command)
         )
-        
-        # Add conversation handler for /set_config
-        self.application.add_handler(config_handler.get_conversation_handler())
-        
+        # /get_config_bot — show current bot TOML (admin only)
+        self.application.add_handler(
+            CommandHandler("get_config_bot", cmd_handlers.get_config_bot_command)
+        )
+
         # Handle unknown commands
         self.application.add_handler(
             MessageHandler(filters.COMMAND, cmd_handlers.unknown_command)
@@ -220,9 +251,13 @@ class WeatherBot:
         if self.scheduler and self.scheduler.running:
             self.scheduler.shutdown(wait=False)
         
-        # Stop bot
+        # Stop bot (updater may already be stopped)
         if self.application:
-            await self.application.updater.stop()
+            try:
+                if self.application.updater:
+                    await self.application.updater.stop()
+            except RuntimeError:
+                pass
             await self.application.stop()
             await self.application.shutdown()
         

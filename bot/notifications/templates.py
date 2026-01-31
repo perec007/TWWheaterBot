@@ -40,7 +40,14 @@ class MessageTemplates:
         if not text:
             return ""
         return re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', str(text))
-    
+
+    @staticmethod
+    def escape_html(text: str) -> str:
+        """Escape & < > for HTML parse mode."""
+        if not text:
+            return ""
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     @classmethod
     def format_flyable_message(
         cls,
@@ -261,10 +268,10 @@ _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
         chat_title: Optional[str] = None
     ) -> str:
         """
-        Format a list of locations with all parameters (same as in /set_config).
+        Format a list of locations with all parameters (same as in /set_config_locations).
         """
         if not locations:
-            return "📍 *Нет настроенных локаций*\n\nИспользуйте /set\\_config для добавления локаций\\."
+            return "📍 *Нет настроенных локаций*\n\nИспользуйте /set\\_config\\_locations для добавления локаций\\."
         
         title = f"📍 *Локации"
         if chat_title:
@@ -449,7 +456,19 @@ _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
 
         return message
     
-    # Example TOML configuration
+    # Example bot-level TOML (API keys, timezone, polling — stored in DB)
+    EXAMPLE_BOT_CONFIG = """# Подключения API и настройки бота (TOML в БД)
+openweather_api_key = "ваш_ключ_openweather"
+visualcrossing_api_key = "ваш_ключ_visualcrossing"
+timezone = "Europe/Moscow"
+polling_interval_minutes = 30
+api_request_delay_seconds = 2
+log_level = "INFO"
+debug_mode = false
+admin_user_ids = [123456789]
+"""
+
+    # Example TOML configuration (locations — in /set_config_locations)
     EXAMPLE_CONFIG = """# Настройки уведомлений
 notifications_enabled = true
 
@@ -490,8 +509,57 @@ precipitation_probability_max = 20
         """Format the help message."""
         return f"""🪂 *Бот мониторинга погоды для парапланеристов*
 
-*Доступные команды:*
+*Как это работает:*
+1\\. Бот периодически проверяет погоду из двух источников
+2\\. При наступлении лётных условий — отправляет уведомление
+3\\. При изменении на нелётные — предупреждает с указанием причин
 
+_Настройки бота \\(API, таймзона, интервал\\) хранятся в отдельном TOML в БД\\. Настраиваются через /set\\_config\\_bot\\. В \\.env только BOT_TOKEN\\._
+
+\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
+
+*🧭 Направления ветра:*
+{cls.WIND_COMPASS}
+
+*Пример конфигурации локаций \\(TOML, /set\\_config\\_locations\\):*
+
+```toml
+{cls.escape_markdown(cls.EXAMPLE_CONFIG)}
+```
+
+_Данные от OpenWeather и VisualCrossing_
+
+\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
+
+*Допустимые параметры бота \\(конфиг /set\\_config\\_bot\\):*
+• `openweather\\_api\\_key` — ключ OpenWeather
+• `visualcrossing\\_api\\_key` — ключ VisualCrossing
+• `timezone` — таймзона \\(напр\\. Europe/Moscow\\)
+• `polling\\_interval\\_minutes` — интервал проверки \\(мин\\)
+• `api\\_request\\_delay\\_seconds` — пауза между запросами к API \\(сек\\)
+• `log\\_level` — уровень логов \\(INFO, DEBUG\\)
+• `debug\\_mode` — режим отладки
+• `admin\\_user\\_ids` — список ID админов \\(числа\\)
+
+*Допустимые параметры локации \\(конфиг /set\\_config\\_locations\\):*
+• `name` — название локации
+• `latitude` — широта \\(напр\\. 43\\.9234\\)
+• `longitude` — долгота \\(напр\\. 42\\.7345\\)
+• `time\\_window\\_start` — начало окна \\(0\\-23\\)
+• `time\\_window\\_end` — конец окна \\(0\\-23\\)
+• `temp\\_min` — мин\\. температура °C
+• `humidity\\_max` — макс\\. влажность %
+• `wind\\_speed\\_max` — макс\\. ветер м/с
+• `wind\\_gust\\_max` — макс\\. порывы м/с \\(по умолчанию 1\\.5× скорости\\)
+• `wind\\_directions` — направления \\(С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ\\)
+• `wind\\_direction\\_tolerance` — допуск ±° от направления
+• `dew\\_point\\_spread\\_min` — разница с точкой росы
+• `required\\_conditions\\_duration\\_hours` — мин\\. часов
+• `precipitation\\_probability\\_max` — осадки %
+
+\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
+
+*Доступные команды:*
 /start — Приветствие и начало работы
 /help — Показать это сообщение
 /weather — Текущая погода \\(или /weather Юца\\)
@@ -499,43 +567,90 @@ precipitation_probability_max = 20
 /status — Статус лётной погоды
 /check — Запустить проверку погоды
 /flywindow — Все лётные окна с подробной погодой
-/get\\_config — Получить текущие настройки
-/set\\_config — Изменить конфигурацию
+/get\\_config\\_locations — Получить настройки локаций
+/set\\_config\\_locations — Изменить конфигурацию локаций \\(погода\\)
+/get\\_config\\_bot — Настройки бота \\(API, таймзона; только админы\\)
+/set\\_config\\_bot — Изменить настройки бота \\(только админы\\)"""
 
-*Как это работает:*
-1\\. Бот периодически проверяет погоду из двух источников
-2\\. При наступлении лётных условий — отправляет уведомление
-3\\. При изменении на нелётные — предупреждает с указанием причин
+    @classmethod
+    def format_help_message_html(cls) -> str:
+        """Format the help message using HTML (avoids MarkdownV2 underscore/italic issues)."""
+        example_escaped = cls.escape_html(cls.EXAMPLE_CONFIG)
+        example_bot_escaped = cls.escape_html(cls.EXAMPLE_BOT_CONFIG)
+        compass_raw = cls.WIND_COMPASS.strip()
+        if compass_raw.startswith("```"):
+            compass_raw = compass_raw[3:].lstrip("\n")
+        if compass_raw.endswith("```"):
+            compass_raw = compass_raw[:-3].rstrip("\n")
+        compass_raw = compass_raw.replace("\\", "")  # drop MarkdownV2 escapes for ( )
+        compass_escaped = cls.escape_html(compass_raw)
+        return f"""🪂 <b>Бот мониторинга погоды для парапланеристов</b>
 
-\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
+<b>Как это работает:</b>
+1. Бот периодически проверяет погоду из двух источников
+2. При наступлении лётных условий — отправляет уведомление
+3. При изменении на нелётные — предупреждает с указанием причин
 
-*🧭 Направления ветра:*
-{cls.WIND_COMPASS}
+<i>Настройки бота (API, таймзона, интервал) хранятся в отдельном TOML в БД. Настраиваются через /set_config_bot. В .env только BOT_TOKEN.</i>
 
-*Пример конфигурации \\(TOML\\):*
+<b>Пример настроек бота (TOML в БД):</b>
+<pre>{example_bot_escaped}</pre>
 
-```toml
-{cls.escape_markdown(cls.EXAMPLE_CONFIG)}
-```
+___________________________
 
-*Параметры локации:*
-• `name` — название локации
-• `latitude` — широта \\(напр\\. 43\\.9234\\)
-• `longitude` — долгота \\(напр\\. 42\\.7345\\)
-• `time_window_start` — начало окна \\(0\\-23\\)
-• `time_window_end` — конец окна \\(0\\-23\\)
-• `temp_min` — мин\\. температура °C
-• `humidity_max` — макс\\. влажность %
-• `wind_speed_max` — макс\\. ветер м/с
-• `wind_gust_max` — макс\\. порывы м/с \\(по умолчанию 1\\.5× скорости\\)
-• `wind_directions` — направления \\(С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ\\)
-• `wind_direction_tolerance` — допуск ±° от направления
-• `dew_point_spread_min` — разница с точкой росы
-• `required_conditions_duration_hours` — мин\\. часов
-• `precipitation_probability_max` — осадки %
+<b>🧭 Направления ветра:</b>
 
-_Данные от OpenWeather и VisualCrossing_"""
-    
+<pre>{compass_escaped}</pre>
+
+<b>Пример конфигурации локаций (TOML, /set_config_locations):</b>
+
+<pre>{example_escaped}</pre>
+
+<i>Данные от OpenWeather и VisualCrossing</i>
+
+___________________________
+
+<b>Допустимые параметры бота (конфиг /set_config_bot):</b>
+• <code>openweather_api_key</code> — ключ OpenWeather
+• <code>visualcrossing_api_key</code> — ключ VisualCrossing
+• <code>timezone</code> — таймзона (напр. Europe/Moscow)
+• <code>polling_interval_minutes</code> — интервал проверки (мин)
+• <code>api_request_delay_seconds</code> — пауза между запросами к API (сек)
+• <code>log_level</code> — уровень логов (INFO, DEBUG)
+• <code>debug_mode</code> — режим отладки
+• <code>admin_user_ids</code> — список ID админов (числа)
+
+<b>Допустимые параметры локации (конфиг /set_config_locations):</b>
+• <code>name</code> — название локации
+• <code>latitude</code> — широта (напр. 43.9234)
+• <code>longitude</code> — долгота (напр. 42.7345)
+• <code>time_window_start</code> — начало окна (0-23)
+• <code>time_window_end</code> — конец окна (0-23)
+• <code>temp_min</code> — мин. температура °C
+• <code>humidity_max</code> — макс. влажность %
+• <code>wind_speed_max</code> — макс. ветер м/с
+• <code>wind_gust_max</code> — макс. порывы м/с (по умолчанию 1.5× скорости)
+• <code>wind_directions</code> — направления (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ)
+• <code>wind_direction_tolerance</code> — допуск ±° от направления
+• <code>dew_point_spread_min</code> — разница с точкой росы
+• <code>required_conditions_duration_hours</code> — мин. часов
+• <code>precipitation_probability_max</code> — осадки %
+
+___________________________
+
+<b>Доступные команды:</b>
+/start — Приветствие и начало работы
+/help — Показать это сообщение
+/weather — Текущая погода (или /weather Юца)
+/list_locations — Список настроенных локаций
+/status — Статус лётной погоды
+/check — Запустить проверку погоды
+/flywindow — Все лётные окна с подробной погодой
+/get_config_locations — Получить настройки локаций
+/set_config_locations — Изменить конфигурацию локаций (погода)
+/get_config_bot — Показать настройки бота (API, таймзона; только админы)
+/set_config_bot — Изменить настройки бота (API, таймзона; только админы)"""
+
     @classmethod
     def format_welcome_message(cls, user_name: str) -> str:
         """Format the welcome message."""
@@ -550,7 +665,7 @@ _Данные от OpenWeather и VisualCrossing_"""
 • /status — текущий статус погоды
 • /help — все команды
 
-_Используйте /set\\_config для настройки локаций_"""
+_Используйте /set\\_config\\_locations для настройки локаций_"""
     
     @classmethod
     def format_new_windows_message(
@@ -659,6 +774,92 @@ _Проверяйте обновления\\._
 _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
     
     @classmethod
+    def format_windows_update_message(
+        cls,
+        location: Location,
+        new_windows: List,
+        cancelled_windows: List,
+        total_windows: int,
+        timezone: pytz.timezone = pytz.UTC
+    ) -> str:
+        """
+        Format one message with new flyable windows and/or cancelled windows.
+        
+        Args:
+            location: Location data
+            new_windows: List of FlyableWindowInfo (new windows)
+            cancelled_windows: List of FlyableWindow (cancelled)
+            total_windows: Total flyable windows in current forecast
+            timezone: Timezone for timestamps
+        
+        Returns:
+            Formatted MarkdownV2 message
+        """
+        now = datetime.now(timezone)
+        parts = []
+        
+        # New flyable windows section
+        if new_windows:
+            new_lines = []
+            for window in new_windows[:7]:
+                date_display = window.date
+                try:
+                    dt = datetime.strptime(window.date, "%Y-%m-%d")
+                    days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                    date_display = f"{days_ru[dt.weekday()]}, {dt.strftime('%d.%m')}"
+                except Exception:
+                    pass
+                source_label = cls._source_label(getattr(window, "source", "both"))
+                new_lines.append(
+                    f"📅 *{cls.escape_markdown(date_display)}*: "
+                    f"{window.start_hour:02d}:00 \\- {window.end_hour:02d}:00 "
+                    f"\\({window.duration_hours}ч\\) \\({cls.escape_markdown(source_label)}\\)"
+                )
+                if window.avg_temp is not None:
+                    new_lines.append(
+                        f"   🌡 {cls.escape_markdown(f'{window.avg_temp:.0f}')}°C, "
+                        f"💨 {cls.escape_markdown(f'{window.avg_wind_speed:.1f}')} м/с, "
+                        f"💧 {cls.escape_markdown(f'{window.avg_humidity:.0f}')}%"
+                    )
+            if len(new_windows) > 7:
+                new_lines.append(f"   _\\.\\.\\.и ещё {len(new_windows) - 7} окон_")
+            parts.append(
+                "*✅ Новые лётные окна:*\n" + "\n".join(new_lines)
+            )
+        
+        # Cancelled windows section
+        if cancelled_windows:
+            cancelled_text = []
+            for window in cancelled_windows[:7]:
+                date_display = window.date
+                try:
+                    dt = datetime.strptime(window.date, "%Y-%m-%d")
+                    days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                    date_display = f"{days_ru[dt.weekday()]}, {dt.strftime('%d.%m')}"
+                except Exception:
+                    pass
+                cancelled_text.append(
+                    f"📅 {cls.escape_markdown(date_display)}: "
+                    f"{window.start_hour:02d}:00 \\- {window.end_hour:02d}:00 \\({window.duration_hours}ч\\)"
+                )
+            if len(cancelled_windows) > 7:
+                cancelled_text.append(f"   _\\.\\.\\.и ещё {len(cancelled_windows) - 7} отменено_")
+            parts.append(
+                "*❌ Отменённые окна:*\n" + "\n".join(cancelled_text)
+            )
+        
+        if not parts:
+            return ""
+        
+        body = "\n\n".join(parts)
+        return f"""🪂 *Обновление: {cls.escape_markdown(location.name)}*
+
+{body}
+
+_Всего окон в прогнозе: {total_windows}_
+_Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
+    
+    @classmethod
     def format_forecast_status_message(
         cls,
         result,  # FullForecastAnalysis
@@ -751,6 +952,68 @@ _OpenWeather: {'✅' if result.openweather_available else '❌'} \\({result.open
 _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
         
         return message
+    
+    @classmethod
+    def format_combined_status_message(
+        cls,
+        locations_results: List,  # List of (Location, FullForecastAnalysis)
+        errors: List,  # List of (location_name: str, error: str)
+        timezone: pytz.timezone = pytz.UTC
+    ) -> str:
+        """
+        Format one status message for all locations.
+        
+        Args:
+            locations_results: List of (location, result) tuples
+            errors: List of (location_name, error_message) for failed locations
+            timezone: Timezone for timestamps
+        
+        Returns:
+            Formatted MarkdownV2 message
+        """
+        now = datetime.now(timezone)
+        parts = ["📊 *СТАТУС ПО ЛОКАЦИЯМ*"]
+        # Период поиска подходящей погоды — берём из первого результата
+        if locations_results:
+            first_result = locations_results[0][1]
+            try:
+                start_str = cls.escape_markdown(first_result.forecast_start.strftime("%d.%m.%Y"))
+                end_str = cls.escape_markdown(first_result.forecast_end.strftime("%d.%m.%Y"))
+                hours = first_result.total_hours_analyzed
+                parts[0] += f"\n📅 Период прогноза: {start_str} — {end_str} \\({hours} ч\\)"
+            except Exception:
+                pass
+        parts[0] += "\n"
+        for location, result in locations_results:
+            status_emoji = "✅🪂" if result.has_flyable_conditions else "❌"
+            loc_block = f"{status_emoji} *{cls.escape_markdown(location.name)}*"
+            if result.flyable_windows:
+                loc_block += f" — {len(result.flyable_windows)} окон"
+                first = result.flyable_windows[0]
+                date_display = first.date
+                try:
+                    dt = datetime.strptime(first.date, "%Y-%m-%d")
+                    days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                    date_display = f"{days_ru[dt.weekday()]}, {dt.strftime('%d.%m')}"
+                except Exception:
+                    pass
+                loc_block += f"\n   📅 {cls.escape_markdown(date_display)} {first.start_hour:02d}:00 \\- {first.end_hour:02d}:00 \\({first.duration_hours}ч\\)"
+                if len(result.flyable_windows) > 1:
+                    loc_block += f" _\\.\\.\\.\\+{len(result.flyable_windows) - 1}_"
+            else:
+                if result.rejection_reasons:
+                    loc_block += f"\n   • {cls.escape_markdown(result.rejection_reasons[0][:60])}"
+                    if len(result.rejection_reasons) > 1:
+                        loc_block += " _\\.\\.\\._"
+            if result.current_temp is not None:
+                loc_block += f"\n   🌡 {cls.escape_markdown(f'{result.current_temp:.0f}')}°C, 💨 {cls.escape_markdown(f'{result.current_wind_speed:.1f}' if result.current_wind_speed else '—')} м/с"
+            parts.append(loc_block)
+        
+        for loc_name, err in errors:
+            parts.append(f"❌ *{cls.escape_markdown(loc_name)}*: {cls.escape_markdown(str(err)[:80])}")
+        
+        parts.append(f"\n_Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_")
+        return "\n\n".join(parts)
     
     @staticmethod
     def _get_wind_direction_name(degrees: int) -> str:

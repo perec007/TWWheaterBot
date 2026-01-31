@@ -60,29 +60,14 @@ cd TGWeatherBot
 # Создайте файл .env из примера
 cp .env.example .env
 
-# Отредактируйте .env файл
+# Укажите токен бота в .env
 nano .env
 ```
 
-Содержимое `.env`:
+В `.env` указывается только **BOT_TOKEN** (токен от @BotFather). Остальные параметры (API ключи погоды, таймзона, интервал проверки, логи и т.д.) хранятся в **TOML в базе данных**. При первом запуске, если в БД ещё нет конфига, бот может взять значения из переменных окружения и сохранить их в БД (для посева можно временно добавить их в `.env`, затем удалить).
 
 ```env
-# Telegram Bot
 BOT_TOKEN=your_telegram_bot_token_here
-
-# Weather API Keys
-OPENWEATHER_API_KEY=your_openweather_api_key_here
-VISUALCROSSING_API_KEY=your_visualcrossing_api_key_here
-
-# Settings
-TIMEZONE=Europe/Moscow
-POLLING_INTERVAL_MINUTES=30
-API_REQUEST_DELAY_SECONDS=2
-LOG_LEVEL=INFO
-DATABASE_PATH=database/weather_bot.db
-
-# Optional: Global admin user IDs (comma-separated)
-ADMIN_USER_IDS=123456789
 ```
 
 ### 4. Запуск с Docker (рекомендуется)
@@ -129,7 +114,7 @@ python -m bot.main
 3. Получите `chat_id` канала:
    - Перешлите любое сообщение из канала боту [@userinfobot](https://t.me/userinfobot)
    - Или используйте API: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-4. Настройте локации через команду `/set_config`
+4. Настройте локации через команду `/set_config_locations`
 
 ## Команды бота
 
@@ -140,12 +125,12 @@ python -m bot.main
 | `/list_locations` | Список настроенных локаций |
 | `/status` | Текущий статус погоды для всех локаций |
 | `/check` | Принудительная проверка погоды |
-| `/get_config` | Показать текущую конфигурацию |
-| `/set_config` | Настроить локации (JSON) |
+| `/get_config_locations` | Показать текущую конфигурацию локаций |
+| `/set_config_locations` | Настроить локации (TOML) |
 
 ## Настройка локаций
 
-Отправьте боту команду `/set_config` и затем TOML-конфигурацию:
+Отправьте боту команду `/set_config_locations` и затем TOML-конфигурацию:
 
 ```toml
 # Настройки уведомлений
@@ -264,7 +249,7 @@ TGWeatherBot/
 │   ├── handlers/
 │   │   ├── __init__.py
 │   │   ├── commands.py      # Обработчики команд
-│   │   └── config_handler.py # Обработчик /set_config
+│   │   └── config_handler.py # Обработчик /set_config_locations
 │   └── notifications/
 │       ├── __init__.py
 │       ├── notifier.py      # Отправка уведомлений
@@ -317,19 +302,29 @@ TGWeatherBot/
 Обновлено: 14:30 15.01.2024
 ```
 
-## Переменные окружения
+## Конфигурация
+
+### Переменные окружения (.env)
 
 | Переменная | Описание | Обязательно |
 |------------|----------|-------------|
-| `BOT_TOKEN` | Токен Telegram бота | ✅ |
-| `OPENWEATHER_API_KEY` | API ключ OpenWeather | ✅ |
-| `VISUALCROSSING_API_KEY` | API ключ VisualCrossing | ✅ |
-| `TIMEZONE` | Часовой пояс | По умолчанию: UTC |
-| `POLLING_INTERVAL_MINUTES` | Интервал проверки в минутах | По умолчанию: 30 |
-| `API_REQUEST_DELAY_SECONDS` | Задержка между API запросами | По умолчанию: 2 |
-| `LOG_LEVEL` | Уровень логирования | По умолчанию: INFO |
-| `DATABASE_PATH` | Путь к файлу БД | По умолчанию: database/weather_bot.db |
-| `ADMIN_USER_IDS` | ID глобальных админов (через запятую) | Опционально |
+| `BOT_TOKEN` | Токен Telegram бота (от @BotFather) | ✅ |
+
+### Конфиг бота (TOML в БД)
+
+Настройки бота хранятся в таблице `bot_config` в базе данных (одна строка с TOML). При первом запуске, если конфиг пуст, он заполняется из переменных окружения (при желании их можно временно добавить в `.env`).
+
+| Параметр (TOML) | Описание | По умолчанию |
+|-----------------|----------|--------------|
+| `openweather_api_key` | API ключ OpenWeather | — |
+| `visualcrossing_api_key` | API ключ VisualCrossing | — |
+| `timezone` | Часовой пояс (напр. Europe/Moscow) | UTC |
+| `polling_interval_minutes` | Интервал проверки, мин | 30 |
+| `api_request_delay_seconds` | Задержка между запросами к API, сек | 2 |
+| `log_level` | Уровень логов (INFO, DEBUG и т.д.) | INFO |
+| `database_path` | Путь к файлу БД | database/weather_bot.db |
+| `admin_user_ids` | Список ID админов (массив чисел) | [] |
+| `debug_mode` | Режим отладки (диагностика админам) | false |
 
 ## Устранение неполадок
 
@@ -339,9 +334,9 @@ TGWeatherBot/
 3. Проверьте логи: `docker-compose logs -f`
 
 ### Нет данных о погоде
-1. Проверьте API ключи в `.env`
-2. Проверьте лимиты вашего плана API
-3. Убедитесь, что координаты локации корректны
+1. Проверьте API ключи в конфиге бота (TOML в БД, таблица `bot_config`)
+2. При первом запуске можно задать ключи в `.env` — они сохранятся в БД
+3. Проверьте лимиты вашего плана API и координаты локации
 
 ### Уведомления не приходят
 1. Убедитесь, что `notifications_enabled: true` в конфигурации

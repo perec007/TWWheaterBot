@@ -1,6 +1,6 @@
 """
 Configuration handler for setting up locations via Telegram.
-Handles /set_config command and TOML configuration parsing.
+Handles /set_config_locations command and TOML configuration parsing.
 """
 
 import json
@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 
-from ..config import Config
+from ..config import Config, DEFAULT_DATABASE_PATH
 from ..database import Database, Location, ChatSettings
 from ..notifications import MessageTemplates
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Conversation states
 WAITING_FOR_CONFIG = 1
 WAITING_FOR_DELETE_CONFIRM = 2
+WAITING_FOR_BOT_CONFIG = 3
 
 # Callback data prefixes
 CONFIRM_DELETE_PREFIX = "cfg_del_yes_"
@@ -73,17 +74,21 @@ class ConfigHandler:
                 return False
         
         return False
-    
+
+    def _is_bot_admin(self, update: Update) -> bool:
+        """Check if user is bot admin (Config.ADMIN_USER_IDS). Only they can edit bot TOML."""
+        return update.effective_user.id in Config.ADMIN_USER_IDS
+
     def get_conversation_handler(self) -> ConversationHandler:
         """
-        Create conversation handler for /set_config command.
+        Create conversation handler for /set_config_locations command.
         
         Returns:
             ConversationHandler instance
         """
         return ConversationHandler(
             entry_points=[
-                CommandHandler("set_config", self.start_config)
+                CommandHandler("set_config_locations", self.start_config)
             ],
             states={
                 WAITING_FOR_CONFIG: [
@@ -104,12 +109,213 @@ class ConfigHandler:
                 ],
             },
             fallbacks=[
+                CommandHandler("set_config_locations", self.start_config),
                 CommandHandler("cancel", self.cancel_config)
             ],
             per_chat=True,
-            per_user=True
+            per_user=True,
+            per_message=False,  # True uses callback_query; command updates are Message, so key would be wrong
         )
-    
+
+    def get_conversation_handler_bot(self) -> ConversationHandler:
+        """
+        Create conversation handler for /set_config_bot (bot-level TOML: API keys, timezone, etc.).
+        Only Config.ADMIN_USER_IDS can use it.
+        """
+        return ConversationHandler(
+            entry_points=[
+                CommandHandler("set_config_bot", self.start_config_bot)
+            ],
+            states={
+                WAITING_FOR_BOT_CONFIG: [
+                    MessageHandler(
+                        filters.TEXT & ~filters.COMMAND,
+                        self.receive_bot_config
+                    ),
+                    MessageHandler(
+                        filters.Document.ALL,
+                        self.receive_bot_config_file
+                    ),
+                ],
+            },
+            fallbacks=[
+                CommandHandler("set_config_bot", self.start_config_bot),
+                CommandHandler("cancel", self.cancel_config_bot)
+            ],
+            per_chat=True,
+            per_user=True,
+            per_message=False,
+        )
+
+    def _generate_bot_toml_from_config(self) -> str:
+        """Generate current bot TOML from Config (for display)."""
+        import toml
+        config = {
+            "openweather_api_key": Config.OPENWEATHER_API_KEY or "",
+            "visualcrossing_api_key": Config.VISUALCROSSING_API_KEY or "",
+            "timezone": Config.TIMEZONE,
+            "polling_interval_minutes": Config.POLLING_INTERVAL_MINUTES,
+            "api_request_delay_seconds": Config.API_REQUEST_DELAY_SECONDS,
+            "log_level": Config.LOG_LEVEL,
+            "debug_mode": Config.DEBUG_MODE,
+            "admin_user_ids": Config.ADMIN_USER_IDS,
+            "database_path": Config.DATABASE_PATH,
+        }
+        return toml.dumps(config)
+
+    async def start_config_bot(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+    ) -> int:
+        """Handle /set_config_bot — show current bot TOML and wait for new one. Admin only."""
+        if not self._is_bot_admin(update):
+            await update.message.reply_text(
+                "⛔ Только администраторы бота \\(ADMIN_USER_IDS\\) могут менять настройки бота\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return ConversationHandler.END
+
+        current = await self.db.get_bot_config()
+        if not current or not current.strip():
+            current = self._generate_bot_toml_from_config()
+
+        message = (
+            "⚙️ *Настройки бота \\(API, таймзона, интервал\\)*\n\n"
+            "Текущий TOML:\n\n"
+            f"```toml\n{MessageTemplates.escape_markdown(current)}```\n\n"
+            "Отправьте новый TOML для замены или /cancel для отмены\\."
+        )
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN_V2)
+        return WAITING_FOR_BOT_CONFIG
+
+    async def receive_bot_config(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+    ) -> int:
+        """Receive bot TOML from text."""
+        text = self._normalize_text(update.message.text)
+        try:
+            config = toml.loads(text)
+            return await self._process_bot_config(update, context, config)
+        except toml.TomlDecodeError as e:
+            await update.message.reply_text(
+                f"❌ Ошибка парсинга TOML: {MessageTemplates.escape_markdown(str(e))}\n\n"
+                "Отправьте корректный TOML или /cancel\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return WAITING_FOR_BOT_CONFIG
+
+    async def receive_bot_config_file(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+    ) -> int:
+        """Receive bot TOML from file."""
+        try:
+            file = await update.message.document.get_file()
+            content = await file.download_as_bytearray()
+            text = self._normalize_text(content.decode("utf-8"))
+            config = toml.loads(text)
+            return await self._process_bot_config(update, context, config)
+        except toml.TomlDecodeError as e:
+            await update.message.reply_text(
+                f"❌ Ошибка парсинга TOML: {MessageTemplates.escape_markdown(str(e))}\n\n"
+                "Отправьте корректный TOML файл или /cancel\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return WAITING_FOR_BOT_CONFIG
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Ошибка чтения файла: {MessageTemplates.escape_markdown(str(e))}",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return WAITING_FOR_BOT_CONFIG
+
+    def _normalize_bot_config_dict(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize bot config dict to expected keys and types."""
+        out = {}
+        if "openweather_api_key" in config:
+            out["openweather_api_key"] = str(config["openweather_api_key"] or "")
+        if "visualcrossing_api_key" in config:
+            out["visualcrossing_api_key"] = str(config["visualcrossing_api_key"] or "")
+        if "timezone" in config:
+            out["timezone"] = str(config["timezone"] or "UTC")
+        if "polling_interval_minutes" in config:
+            v = config["polling_interval_minutes"]
+            out["polling_interval_minutes"] = int(v) if v is not None else 30
+        if "api_request_delay_seconds" in config:
+            v = config["api_request_delay_seconds"]
+            out["api_request_delay_seconds"] = float(v) if v is not None else 2.0
+        if "log_level" in config:
+            out["log_level"] = str(config["log_level"] or "INFO")
+        if "debug_mode" in config:
+            v = config["debug_mode"]
+            out["debug_mode"] = v if isinstance(v, bool) else str(v).lower() in ("true", "1", "yes")
+        if "admin_user_ids" in config:
+            v = config["admin_user_ids"]
+            if isinstance(v, list):
+                out["admin_user_ids"] = [int(x) for x in v if str(x).strip().isdigit()]
+            else:
+                out["admin_user_ids"] = []
+        if "database_path" in config:
+            out["database_path"] = str(config["database_path"] or DEFAULT_DATABASE_PATH)
+        return out
+
+    async def _process_bot_config(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        config: Dict[str, Any]
+    ) -> int:
+        """Validate, save bot config to DB and apply to Config."""
+        normalized = self._normalize_bot_config_dict(config)
+        # Merge with current (and defaults) so we don't drop keys user didn't send
+        current_toml = await self.db.get_bot_config()
+        current = toml.loads(current_toml) if (current_toml and current_toml.strip()) else {}
+        defaults = {
+            "openweather_api_key": "", "visualcrossing_api_key": "", "timezone": "UTC",
+            "polling_interval_minutes": 30, "api_request_delay_seconds": 2.0,
+            "log_level": "INFO", "debug_mode": False, "admin_user_ids": [],
+            "database_path": DEFAULT_DATABASE_PATH,
+        }
+        merged = {**defaults, **current, **normalized}
+        # Apply to Config and validate
+        Config.set_runtime_config(merged)
+        errors = Config.validate()
+        if errors:
+            # Restore from DB
+            if current_toml and current_toml.strip():
+                Config.set_runtime_config(toml.loads(current_toml))
+            err_list = "\n".join([f"• {MessageTemplates.escape_markdown(e)}" for e in errors])
+            await update.message.reply_text(
+                f"❌ *Ошибки в настройках бота:*\n\n{err_list}\n\n"
+                "Исправьте и отправьте снова или /cancel\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return WAITING_FOR_BOT_CONFIG
+        toml_str = toml.dumps(merged)
+        await self.db.set_bot_config(toml_str)
+        await update.message.reply_text(
+            "✅ Настройки бота сохранены\\. Изменения применены без перезапуска\\.\n"
+            "_При смене API ключей перезапустите контейнер для обновления подключений\\._",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return ConversationHandler.END
+
+    async def cancel_config_bot(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+    ) -> int:
+        """Cancel bot config editing."""
+        await update.message.reply_text(
+            "❌ Редактирование настроек бота отменено\\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return ConversationHandler.END
+
     def _generate_toml_config(self, locations: list, settings: Optional[ChatSettings] = None) -> str:
         """
         Generate TOML configuration from locations list.
@@ -149,7 +355,7 @@ class ConfigHandler:
         context: ContextTypes.DEFAULT_TYPE
     ) -> int:
         """
-        Handle /set_config command - show current config and wait for new one.
+        Handle /set_config_locations command - show current config and wait for new one.
         """
         if not await self._is_authorized(update, context):
             await update.message.reply_text(
@@ -370,7 +576,7 @@ _Используйте /cancel для отмены_"""
             
             if not config:
                 await query.edit_message_text(
-                    "❌ Ошибка: конфигурация не найдена\\. Начните заново с /set\\_config",
+                    "❌ Ошибка: конфигурация не найдена\\. Начните заново с /set\\_config\\_locations",
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
                 return ConversationHandler.END
@@ -402,7 +608,7 @@ _Используйте /cancel для отмены_"""
             
             await query.edit_message_text(
                 "❌ Изменение конфигурации отменено\\.\n\n"
-                "Локации не были удалены\\. Используйте /set\\_config чтобы начать заново\\.",
+                "Локации не были удалены\\. Используйте /set\\_config\\_locations чтобы начать заново\\.",
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return ConversationHandler.END

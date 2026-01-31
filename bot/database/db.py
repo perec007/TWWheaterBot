@@ -106,6 +106,15 @@ class Database:
                 )
             """)
             
+            # Bot config (single row TOML: API keys, timezone, polling, etc.)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bot_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    config_toml TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Weather status table
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS weather_status (
@@ -241,6 +250,29 @@ class Database:
             except:
                 pass  # Column already exists
             
+            await self._connection.commit()
+    
+    # =========================================================================
+    # Bot config (TOML in DB)
+    # =========================================================================
+    
+    async def get_bot_config(self) -> Optional[str]:
+        """Get bot config TOML string. Returns None if not set."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("SELECT config_toml FROM bot_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+            return None
+    
+    async def set_bot_config(self, config_toml: str) -> None:
+        """Insert or replace bot config TOML."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                INSERT INTO bot_config (id, config_toml, updated_at)
+                VALUES (1, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET config_toml = excluded.config_toml, updated_at = CURRENT_TIMESTAMP
+            """, (config_toml,))
             await self._connection.commit()
     
     # =========================================================================

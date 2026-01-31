@@ -1,50 +1,69 @@
 """
 Configuration management for the Weather Bot.
-Loads settings from environment variables and provides defaults.
+Bot config (API keys, timezone, polling, etc.) is loaded from TOML stored in the DB.
+BOT_TOKEN remains in .env. Other params: TOML in DB, fallback from .env when seeding.
 """
 
 import os
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any
 from dotenv import load_dotenv
 import pytz
 
-# Load environment variables from .env file
 load_dotenv()
+
+DEFAULT_DATABASE_PATH = "database/weather_bot.db"
+
+
+def _admin_ids_from_value(v: Any) -> List[int]:
+    if isinstance(v, list):
+        return [int(x) for x in v if str(x).strip().isdigit()]
+    if isinstance(v, str) and v:
+        return [int(uid.strip()) for uid in v.split(",") if uid.strip().isdigit()]
+    return []
 
 
 class Config:
-    """Application configuration loaded from environment variables."""
+    """
+    Application configuration.
+    Most keys are loaded from TOML in DB at startup (set_runtime_config).
+    BOT_TOKEN from .env only. Other params: TOML in DB, fallback from .env when seeding.
+    """
     
-    # Telegram Bot
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-    
-    # Weather API Keys
     OPENWEATHER_API_KEY: str = os.getenv("OPENWEATHER_API_KEY", "")
     VISUALCROSSING_API_KEY: str = os.getenv("VISUALCROSSING_API_KEY", "")
-    
-    # Timing Settings
     TIMEZONE: str = os.getenv("TIMEZONE", "UTC")
     POLLING_INTERVAL_MINUTES: int = int(os.getenv("POLLING_INTERVAL_MINUTES", "30"))
     API_REQUEST_DELAY_SECONDS: float = float(os.getenv("API_REQUEST_DELAY_SECONDS", "2"))
-    
-    # Logging
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-    
-    # Debug mode - send diagnostic messages to admins after each API call
+    LOG_LEVEL: str = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
     DEBUG_MODE: bool = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+    DATABASE_PATH: str = os.getenv("DATABASE_PATH", DEFAULT_DATABASE_PATH)
+    ADMIN_USER_IDS: List[int] = _admin_ids_from_value(os.getenv("ADMIN_USER_IDS", ""))
     
-    # Database
-    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "database/weather_bot.db")
-    
-    # Admin user IDs (comma-separated in env)
-    _admin_ids_str: str = os.getenv("ADMIN_USER_IDS", "")
-    ADMIN_USER_IDS: List[int] = [
-        int(uid.strip()) 
-        for uid in _admin_ids_str.split(",") 
-        if uid.strip().isdigit()
-    ]
+    @classmethod
+    def set_runtime_config(cls, config: dict) -> None:
+        """Overwrite config from DB TOML. Called at startup after loading TOML."""
+        if "openweather_api_key" in config:
+            cls.OPENWEATHER_API_KEY = str(config["openweather_api_key"] or "")
+        if "visualcrossing_api_key" in config:
+            cls.VISUALCROSSING_API_KEY = str(config["visualcrossing_api_key"] or "")
+        if "timezone" in config:
+            cls.TIMEZONE = str(config["timezone"] or "UTC")
+        if "polling_interval_minutes" in config:
+            cls.POLLING_INTERVAL_MINUTES = int(config["polling_interval_minutes"] or 30)
+        if "api_request_delay_seconds" in config:
+            cls.API_REQUEST_DELAY_SECONDS = float(config["api_request_delay_seconds"] or 2)
+        if "log_level" in config:
+            cls.LOG_LEVEL = (str(config["log_level"] or "INFO")).upper()
+        if "debug_mode" in config:
+            v = config["debug_mode"]
+            cls.DEBUG_MODE = v if isinstance(v, bool) else str(v).lower() in ("true", "1", "yes")
+        if "database_path" in config:
+            cls.DATABASE_PATH = str(config["database_path"] or DEFAULT_DATABASE_PATH)
+        if "admin_user_ids" in config:
+            cls.ADMIN_USER_IDS = _admin_ids_from_value(config["admin_user_ids"])
     
     @classmethod
     def get_timezone(cls) -> pytz.timezone:
