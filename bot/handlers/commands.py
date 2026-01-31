@@ -118,7 +118,7 @@ class CommandHandlers:
             parse_mode=ParseMode.MARKDOWN_V2
         )
         
-        logger.info(f"User {user.id} started bot in chat {chat.id}")
+        logger.debug(f"User {user.id} started bot in chat {chat.id}")
     
     async def help_command(
         self,
@@ -127,22 +127,8 @@ class CommandHandlers:
     ) -> None:
         """
         Handle /help command.
-        Sends wind directions image, then help message with command list.
+        Sends help message with command list and wind directions compass.
         """
-        # Path to wind rose image (bot/static/wind_directions.png)
-        static_dir = Path(__file__).resolve().parent.parent / "static"
-        wind_image_path = static_dir / "wind_directions.png"
-        if wind_image_path.is_file():
-            try:
-                with open(wind_image_path, "rb") as photo_file:
-                    await update.message.reply_photo(
-                        photo=photo_file,
-                        caption="🧭 *Направления ветра*\nС \\= Север, В \\= Восток, Ю \\= Юг, З \\= Запад\nСВ, ЮВ, ЮЗ, СЗ \\= промежуточные",
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                    )
-            except Exception as e:
-                logger.warning(f"Could not send wind directions image: {e}")
-
         message = MessageTemplates.format_help_message()
         await update.message.reply_text(
             message,

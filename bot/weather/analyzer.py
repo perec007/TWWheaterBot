@@ -401,8 +401,7 @@ class WeatherAnalyzer:
             return False
         
         # Wind gust
-        gust_limit = location.wind_speed_max * 1.5
-        if weather.wind_gust > gust_limit:
+        if weather.wind_gust > location.wind_gust_max:
             return False
         
         # Wind direction

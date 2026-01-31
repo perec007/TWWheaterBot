@@ -71,11 +71,11 @@ venv.bak/
 .AppleDouble
 .LSOverride
 
-# Database
+# Database (data directory at project root only)
 *.db
 *.sqlite
 *.sqlite3
-database/
+/database/
 
 # Logs
 *.log

@@ -177,7 +177,7 @@ class Notifier:
         self.debug_mode = Config.DEBUG_MODE
         self.admin_ids = Config.ADMIN_USER_IDS
         
-        logger.info(f"Notifier initialized: debug_mode={self.debug_mode}, admin_ids={self.admin_ids}")
+        logger.debug(f"Notifier initialized: debug_mode={self.debug_mode}, admin_ids={self.admin_ids}")
     
     async def _send_diagnostic(self, message: str) -> None:
         """Send diagnostic message to all admin users."""
@@ -204,10 +204,10 @@ class Notifier:
     
     async def check_all_locations(self) -> None:
         """Check weather for all active locations and send notifications if needed."""
-        logger.info("Starting weather check for all locations")
+        logger.debug("Starting weather check for all locations")
         
         locations = await self.db.get_all_active_locations()
-        logger.info(f"Found {len(locations)} active locations")
+        logger.debug(f"Found {len(locations)} active locations")
         
         for location in locations:
             try:
@@ -227,7 +227,7 @@ class Notifier:
         Returns:
             Analysis result
         """
-        logger.info(f"Checking weather for location: {location.name}")
+        logger.debug(f"Checking weather for location: {location.name}")
         
         # Fetch weather data from OpenWeather
         ow_data = None
@@ -372,7 +372,7 @@ class Notifier:
         # Send cancellation notifications
         for window in cancelled_windows:
             await self._send_window_cancelled_notification(location, window)
-            logger.info(f"Sent cancellation for window {window.date} {window.start_hour}:00-{window.end_hour}:00")
+            logger.debug(f"Sent cancellation for window {window.date} {window.start_hour}:00-{window.end_hour}:00")
         
         # Find new windows (not yet notified)
         notified_keys = set()
@@ -402,7 +402,7 @@ class Notifier:
                         not db_window.notified):
                         await self.db.mark_window_notified(db_window.id, now)
             
-            logger.info(f"Notified about {len(new_windows)} new flyable windows for {location.name}")
+            logger.info(f"🪂 {location.name}: {len(new_windows)} new flyable window(s)")
         
         # Update weather status
         await self._update_weather_status(location, result, forecast, current_windows)
@@ -430,7 +430,7 @@ class Notifier:
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             
-            logger.info(f"Sent new windows notification to chat {location.chat_id}")
+            logger.debug(f"Sent new windows notification to chat {location.chat_id}")
         
         except TelegramError as e:
             logger.error(f"Failed to send new windows notification: {e}")
@@ -454,7 +454,7 @@ class Notifier:
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             
-            logger.info(f"Sent cancellation notification to chat {location.chat_id}")
+            logger.info(f"❌ {location.chat_id}: window cancelled")
         
         except TelegramError as e:
             logger.error(f"Failed to send cancellation notification: {e}")

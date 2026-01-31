@@ -48,7 +48,7 @@ class WeatherBot:
         """
         Initialize all bot components.
         """
-        logger.info("Initializing Weather Bot...")
+        logger.debug("Initializing Weather Bot...")
         
         # Setup logging
         Config.setup_logging()
@@ -96,7 +96,7 @@ class WeatherBot:
         # Setup scheduler
         self._setup_scheduler(timezone)
         
-        logger.info("Weather Bot initialized successfully")
+        logger.debug("Weather Bot initialized successfully")
     
     def _setup_handlers(self) -> None:
         """Setup Telegram command handlers."""
@@ -137,7 +137,7 @@ class WeatherBot:
             MessageHandler(filters.COMMAND, cmd_handlers.unknown_command)
         )
         
-        logger.info("Command handlers registered")
+        logger.debug("Command handlers registered")
     
     def _setup_scheduler(self, timezone: pytz.timezone) -> None:
         """Setup periodic weather check scheduler."""
@@ -164,25 +164,25 @@ class WeatherBot:
             replace_existing=True
         )
         
-        logger.info(
+        logger.debug(
             f"Scheduler configured: weather check every {Config.POLLING_INTERVAL_MINUTES} minutes"
         )
     
     async def _scheduled_weather_check(self) -> None:
         """Scheduled job to check weather for all locations."""
-        logger.info("Running scheduled weather check")
+        logger.debug("Running scheduled weather check")
         try:
             await self.notifier.check_all_locations()
-            logger.info("Scheduled weather check completed")
+            logger.debug("Scheduled weather check completed")
         except Exception as e:
             logger.error(f"Error in scheduled weather check: {e}")
     
     async def _scheduled_cleanup(self) -> None:
         """Scheduled job to clean up old records."""
-        logger.info("Running scheduled cleanup")
+        logger.debug("Running scheduled cleanup")
         try:
             deleted = await self.db.cleanup_old_checks(days_to_keep=7)
-            logger.info(f"Cleanup completed: {deleted} old records deleted")
+            logger.debug(f"Cleanup completed: {deleted} old records deleted")
         except Exception as e:
             logger.error(f"Error in scheduled cleanup: {e}")
     
@@ -193,7 +193,7 @@ class WeatherBot:
             return
         
         self._running = True
-        logger.info("Starting Weather Bot...")
+        logger.debug("Starting Weather Bot...")
         
         # Start scheduler
         self.scheduler.start()
@@ -205,7 +205,7 @@ class WeatherBot:
             allowed_updates=Update.ALL_TYPES
         )
         
-        logger.info("Weather Bot is running")
+        logger.debug("Weather Bot is running")
         
         # Keep running until stopped
         while self._running:
@@ -213,7 +213,7 @@ class WeatherBot:
     
     async def stop(self) -> None:
         """Stop the bot gracefully."""
-        logger.info("Stopping Weather Bot...")
+        logger.debug("Stopping Weather Bot...")
         self._running = False
         
         # Stop scheduler
@@ -236,7 +236,7 @@ class WeatherBot:
         if self.db:
             await self.db.close()
         
-        logger.info("Weather Bot stopped")
+        logger.debug("Weather Bot stopped")
 
 
 async def main() -> None:
@@ -247,7 +247,7 @@ async def main() -> None:
     loop = asyncio.get_event_loop()
     
     def signal_handler():
-        logger.info("Received shutdown signal")
+        logger.debug("Received shutdown signal")
         asyncio.create_task(bot.stop())
     
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -257,7 +257,7 @@ async def main() -> None:
         await bot.initialize()
         await bot.start()
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        logger.debug("Interrupted by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         raise

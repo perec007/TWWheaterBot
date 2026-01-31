@@ -284,7 +284,7 @@ _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
             lines.append(f"   ⏱ Мин\\. непрерывно: {loc.required_conditions_duration_hours} ч\\.")
             lines.append(f"   🌡 Температура: ≥{cls.escape_markdown(str(loc.temp_min))}°C")
             lines.append(f"   💧 Влажность макс\\.: {cls.escape_markdown(str(loc.humidity_max))}%")
-            lines.append(f"   💨 Ветер макс\\.: {cls.escape_markdown(str(loc.wind_speed_max))} м/с")
+            lines.append(f"   💨 Ветер макс\\.: {cls.escape_markdown(str(loc.wind_speed_max))} м/с, порывы до {cls.escape_markdown(str(loc.wind_gust_max))} м/с")
             lines.append(f"   🧭 Направления ветра: {cls.escape_markdown(wind_dirs_str)}, допуск ±{loc.wind_direction_tolerance}° \\(по компасу\\)")
             lines.append(f"   🌫 Мин\\. разница с точкой росы: {cls.escape_markdown(str(loc.dew_point_spread_min))}°C")
             lines.append(f"   🌧 Макс\\. вероятность осадков: {cls.escape_markdown(str(loc.precipitation_probability_max))}%")
@@ -328,6 +328,7 @@ _Обновлено: {cls.escape_markdown(now.strftime('%H:%M %d.%m.%Y'))}_"""
 
 *Ветер:*
 💨 Макс\\. скорость: {cls.escape_markdown(str(location.wind_speed_max))} м/с
+🌬 Макс\\. порывы: {cls.escape_markdown(str(location.wind_gust_max))} м/с
 🧭 Направления: {cls.escape_markdown(wind_dirs_str)}
 🎯 Допуск: ±{location.wind_direction_tolerance}° \\(по компасу\\)
 
@@ -461,13 +462,28 @@ time_window_end = 18
 temp_min = 5
 humidity_max = 85
 wind_speed_max = 8
-wind_directions = [0, 45, 315]
-# С, СВ, СЗ (см. рисунок направлений выше)
+wind_gust_max = 12
+wind_directions = ["С", "СВ", "СЗ"]
 wind_direction_tolerance = 45
 dew_point_spread_min = 2
 required_conditions_duration_hours = 4
 precipitation_probability_max = 20
 """
+    
+    # Wind directions compass ASCII art (pre-escaped for MarkdownV2)
+    WIND_COMPASS = """```
+        С \\(0°\\)
+    СЗ     │     СВ
+      ╲    │    ╱
+       ╲   │   ╱
+        ╲  │  ╱
+З ────────┼──────── В
+        ╱  │  ╲
+       ╱   │   ╲
+      ╱    │    ╲
+    ЮЗ     │     ЮВ
+        Ю \\(180°\\)
+```"""
     
     @classmethod
     def format_help_message(cls) -> str:
@@ -493,6 +509,9 @@ precipitation_probability_max = 20
 
 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
 
+*🧭 Направления ветра:*
+{cls.WIND_COMPASS}
+
 *Пример конфигурации \\(TOML\\):*
 
 ```toml
@@ -508,7 +527,8 @@ precipitation_probability_max = 20
 • `temp_min` — мин\\. температура °C
 • `humidity_max` — макс\\. влажность %
 • `wind_speed_max` — макс\\. ветер м/с
-• `wind_directions` — направления ветра \\(С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ — см\\. рисунок\\)
+• `wind_gust_max` — макс\\. порывы м/с \\(по умолчанию 1\\.5× скорости\\)
+• `wind_directions` — направления \\(С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ\\)
 • `wind_direction_tolerance` — допуск ±° от направления
 • `dew_point_spread_min` — разница с точкой росы
 • `required_conditions_duration_hours` — мин\\. часов

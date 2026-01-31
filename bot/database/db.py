@@ -61,6 +61,7 @@ class Database:
                     temp_min REAL DEFAULT 5.0,
                     humidity_max REAL DEFAULT 85.0,
                     wind_speed_max REAL DEFAULT 8.0,
+                    wind_gust_max REAL DEFAULT 12.0,
                     wind_directions TEXT DEFAULT '[]',
                     wind_direction_tolerance INTEGER DEFAULT 45,
                     dew_point_spread_min REAL DEFAULT 2.0,
@@ -81,6 +82,15 @@ class Database:
             except Exception as e:
                 if "no such column" not in str(e).lower():
                     logger.debug("Migration temp_max: %s", e)
+            
+            # Migration: add wind_gust_max column
+            try:
+                await cursor.execute("ALTER TABLE locations ADD COLUMN wind_gust_max REAL DEFAULT 12.0")
+                await self._connection.commit()
+                logger.info("Migration: added column locations.wind_gust_max")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.debug("Migration wind_gust_max: %s", e)
             
             # Chat settings table
             await cursor.execute("""
@@ -245,16 +255,16 @@ class Database:
                     chat_id, name, latitude, longitude,
                     time_window_start, time_window_end,
                     temp_min, humidity_max,
-                    wind_speed_max, wind_directions, wind_direction_tolerance,
+                    wind_speed_max, wind_gust_max, wind_directions, wind_direction_tolerance,
                     dew_point_spread_min, required_conditions_duration_hours,
                     precipitation_probability_max, cloud_cover_max,
                     is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 location.chat_id, location.name, location.latitude, location.longitude,
                 location.time_window_start, location.time_window_end,
                 location.temp_min, location.humidity_max,
-                location.wind_speed_max, location.wind_directions, location.wind_direction_tolerance,
+                location.wind_speed_max, location.wind_gust_max, location.wind_directions, location.wind_direction_tolerance,
                 location.dew_point_spread_min, location.required_conditions_duration_hours,
                 location.precipitation_probability_max, location.cloud_cover_max,
                 1 if location.is_active else 0
@@ -309,7 +319,7 @@ class Database:
                     name = ?, latitude = ?, longitude = ?,
                     time_window_start = ?, time_window_end = ?,
                     temp_min = ?, humidity_max = ?,
-                    wind_speed_max = ?, wind_directions = ?, wind_direction_tolerance = ?,
+                    wind_speed_max = ?, wind_gust_max = ?, wind_directions = ?, wind_direction_tolerance = ?,
                     dew_point_spread_min = ?, required_conditions_duration_hours = ?,
                     precipitation_probability_max = ?, cloud_cover_max = ?,
                     is_active = ?, updated_at = CURRENT_TIMESTAMP
@@ -318,7 +328,7 @@ class Database:
                 location.name, location.latitude, location.longitude,
                 location.time_window_start, location.time_window_end,
                 location.temp_min, location.humidity_max,
-                location.wind_speed_max, location.wind_directions, location.wind_direction_tolerance,
+                location.wind_speed_max, location.wind_gust_max, location.wind_directions, location.wind_direction_tolerance,
                 location.dew_point_spread_min, location.required_conditions_duration_hours,
                 location.precipitation_probability_max, location.cloud_cover_max,
                 1 if location.is_active else 0,
@@ -369,26 +379,29 @@ class Database:
     
     def _row_to_location(self, row: aiosqlite.Row) -> Location:
         """Convert a database row to a Location object."""
+        # Use dict() to allow .get() for optional/new columns
+        row_dict = dict(row)
         return Location(
-            id=row["id"],
-            chat_id=row["chat_id"],
-            name=row["name"],
-            latitude=row["latitude"],
-            longitude=row["longitude"],
-            time_window_start=row["time_window_start"],
-            time_window_end=row["time_window_end"],
-            temp_min=row["temp_min"],
-            humidity_max=row["humidity_max"],
-            wind_speed_max=row["wind_speed_max"],
-            wind_directions=row["wind_directions"],
-            wind_direction_tolerance=row["wind_direction_tolerance"],
-            dew_point_spread_min=row["dew_point_spread_min"],
-            required_conditions_duration_hours=row["required_conditions_duration_hours"],
-            precipitation_probability_max=row["precipitation_probability_max"],
-            cloud_cover_max=row["cloud_cover_max"],
-            is_active=bool(row["is_active"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"]
+            id=row_dict["id"],
+            chat_id=row_dict["chat_id"],
+            name=row_dict["name"],
+            latitude=row_dict["latitude"],
+            longitude=row_dict["longitude"],
+            time_window_start=row_dict["time_window_start"],
+            time_window_end=row_dict["time_window_end"],
+            temp_min=row_dict["temp_min"],
+            humidity_max=row_dict["humidity_max"],
+            wind_speed_max=row_dict["wind_speed_max"],
+            wind_gust_max=row_dict.get("wind_gust_max", 12.0),  # Default for migration
+            wind_directions=row_dict["wind_directions"],
+            wind_direction_tolerance=row_dict["wind_direction_tolerance"],
+            dew_point_spread_min=row_dict["dew_point_spread_min"],
+            required_conditions_duration_hours=row_dict["required_conditions_duration_hours"],
+            precipitation_probability_max=row_dict["precipitation_probability_max"],
+            cloud_cover_max=row_dict["cloud_cover_max"],
+            is_active=bool(row_dict["is_active"]),
+            created_at=row_dict["created_at"],
+            updated_at=row_dict["updated_at"]
         )
     
     # =========================================================================

@@ -128,6 +128,7 @@ class ConfigHandler:
             lines.append(f"temp_min = {loc.temp_min}")
             lines.append(f"humidity_max = {loc.humidity_max}")
             lines.append(f"wind_speed_max = {loc.wind_speed_max}")
+            lines.append(f"wind_gust_max = {loc.wind_gust_max}")
             
             wind_dirs = loc.get_wind_directions_list()
             # Output as letter codes for better readability
@@ -487,7 +488,7 @@ _Используйте /cancel для отмены_"""
                 parse_mode=ParseMode.MARKDOWN_V2
             )
             
-            logger.info(
+            logger.debug(
                 f"Config saved for chat {chat.id} by user {user.id}: "
                 f"{created_count} created, {updated_count} updated, {deleted_count} deleted"
             )
@@ -629,6 +630,10 @@ _Используйте /cancel для отмены_"""
         """Create a Location object from configuration."""
         wind_directions = self._normalize_wind_directions(config.get("wind_directions", []))
         
+        wind_speed_max = config.get("wind_speed_max", 8.0)
+        # Default gust max is 1.5x wind speed if not specified
+        wind_gust_max = config.get("wind_gust_max", wind_speed_max * 1.5)
+        
         return Location(
             chat_id=chat_id,
             name=config["name"],
@@ -638,7 +643,8 @@ _Используйте /cancel для отмены_"""
             time_window_end=config.get("time_window_end", 18),
             temp_min=config.get("temp_min", 5.0),
             humidity_max=config.get("humidity_max", 85.0),
-            wind_speed_max=config.get("wind_speed_max", 8.0),
+            wind_speed_max=wind_speed_max,
+            wind_gust_max=wind_gust_max,
             wind_directions=json.dumps(wind_directions),
             wind_direction_tolerance=config.get("wind_direction_tolerance", 45),
             dew_point_spread_min=config.get("dew_point_spread_min", 2.0),
@@ -661,6 +667,7 @@ _Используйте /cancel для отмены_"""
         location.temp_min = config.get("temp_min", location.temp_min)
         location.humidity_max = config.get("humidity_max", location.humidity_max)
         location.wind_speed_max = config.get("wind_speed_max", location.wind_speed_max)
+        location.wind_gust_max = config.get("wind_gust_max", location.wind_gust_max)
         
         wind_directions = config.get("wind_directions")
         if wind_directions is not None:

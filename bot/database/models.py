@@ -41,6 +41,8 @@ class Location:
         # Wind settings
         wind_speed_max: Maximum wind speed in m/s
             Example: 8.0
+        wind_gust_max: Maximum wind gust speed in m/s
+            Example: 12.0 (typically 1.5x wind_speed_max)
         wind_directions: Allowed wind directions as JSON array of degrees
             Example: "[0, 45, 90, 315]" for N, NE, E, NW
             Empty array "[]" means all directions allowed
@@ -83,6 +85,7 @@ class Location:
     
     # Wind
     wind_speed_max: float = 8.0
+    wind_gust_max: float = 12.0  # Maximum gust speed (typically 1.5x wind_speed_max)
     wind_directions: str = "[]"  # JSON array of allowed directions in degrees
     wind_direction_tolerance: int = 45
     
@@ -126,6 +129,7 @@ class Location:
             "temp_min": self.temp_min,
             "humidity_max": self.humidity_max,
             "wind_speed_max": self.wind_speed_max,
+            "wind_gust_max": self.wind_gust_max,
             "wind_directions": self.wind_directions,
             "wind_direction_tolerance": self.wind_direction_tolerance,
             "dew_point_spread_min": self.dew_point_spread_min,

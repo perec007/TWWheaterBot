@@ -15,15 +15,15 @@
 
 ## Критерии лётной погоды
 
-Бот проверяет следующие параметры:
+Бот проверяет следующие параметры (Переопределяются в конфигурационном файле через диалог с ботом):
 
 | Параметр | Описание | Пример значения |
 |----------|----------|-----------------|
-| Температура | Минимальная и максимальная | 5°C - 35°C |
+| Температура | Минимальная | ≥5°C |
 | Влажность | Максимальная | ≤85% |
 | Скорость ветра | Максимальная | ≤8 м/с |
-| Направление ветра | Допустимые направления | [0, 45, 315]° |
-| Порывы ветра | Не более 1.5× макс. скорости | ≤12 м/с |
+| Порывы ветра | Максимальные (настраиваемые) | ≤12 м/с |
+| Направление ветра | Допустимые направления | С, СВ, СЗ |
 | Точка росы | Мин. разница с температурой | ≥2°C |
 | Вероятность осадков | Максимальная | ≤20% |
 | Облачность | Максимальная | ≤80% |
@@ -145,46 +145,45 @@ python -m bot.main
 
 ## Настройка локаций
 
-Отправьте боту команду `/set_config` и затем JSON-конфигурацию:
+Отправьте боту команду `/set_config` и затем TOML-конфигурацию:
 
-```json
-{
-  "locations": [
-    {
-      "name": "Юца",
-      "latitude": 43.9234,
-      "longitude": 42.7345,
-      "time_window_start": 8,
-      "time_window_end": 18,
-      "temp_min": 5,
-      "humidity_max": 85,
-      "wind_speed_max": 8,
-      "wind_directions": [0, 45, 315],
-      "wind_direction_tolerance": 45,
-      "dew_point_spread_min": 2,
-      "required_conditions_duration_hours": 4,
-      "precipitation_probability_max": 20,
-      "cloud_cover_max": 80
-    },
-    {
-      "name": "Чегем",
-      "latitude": 43.4234,
-      "longitude": 43.2345,
-      "time_window_start": 9,
-      "time_window_end": 17,
-      "temp_min": 10,
-      "humidity_max": 80,
-      "wind_speed_max": 6,
-      "wind_directions": [],
-      "wind_direction_tolerance": 45,
-      "dew_point_spread_min": 3,
-      "required_conditions_duration_hours": 3,
-      "precipitation_probability_max": 15,
-      "cloud_cover_max": 70
-    }
-  ],
-  "notifications_enabled": true
-}
+```toml
+# Настройки уведомлений
+notifications_enabled = true
+
+[[locations]]
+name = "Юца"
+latitude = 43.9234
+longitude = 42.7345
+time_window_start = 8
+time_window_end = 18
+temp_min = 5
+humidity_max = 85
+wind_speed_max = 8
+wind_gust_max = 12
+wind_directions = ["С", "СВ", "СЗ"]
+wind_direction_tolerance = 45
+dew_point_spread_min = 2
+required_conditions_duration_hours = 4
+precipitation_probability_max = 20
+cloud_cover_max = 80
+
+[[locations]]
+name = "Чегем"
+latitude = 43.4234
+longitude = 43.2345
+time_window_start = 9
+time_window_end = 17
+temp_min = 10
+humidity_max = 80
+wind_speed_max = 6
+wind_gust_max = 10
+wind_directions = []
+wind_direction_tolerance = 45
+dew_point_spread_min = 3
+required_conditions_duration_hours = 3
+precipitation_probability_max = 15
+cloud_cover_max = 70
 ```
 
 ### Параметры локации
@@ -199,7 +198,8 @@ python -m bot.main
 | `temp_min` | float | Мин. температура °C | 5.0 |
 | `humidity_max` | float | Макс. влажность % | 85.0 |
 | `wind_speed_max` | float | Макс. скорость ветра м/с | 8.0 |
-| `wind_directions` | array | Допустимые направления в градусах | [] (все) |
+| `wind_gust_max` | float | Макс. порывы ветра м/с | 12.0 (1.5× wind_speed_max) |
+| `wind_directions` | array | Допустимые направления (буквы или градусы) | [] (все) |
 | `wind_direction_tolerance` | int | Допуск направления ±° | 45 |
 | `dew_point_spread_min` | float | Мин. разница с точкой росы °C | 2.0 |
 | `required_conditions_duration_hours` | int | Требуемое кол-во непрерывных часов | 4 |
@@ -208,17 +208,26 @@ python -m bot.main
 
 ### Направление ветра
 
-Направление указывается в градусах:
-- 0° / 360° — Север (С)
-- 45° — Северо-восток (СВ)
-- 90° — Восток (В)
-- 135° — Юго-восток (ЮВ)
-- 180° — Юг (Ю)
-- 225° — Юго-запад (ЮЗ)
-- 270° — Запад (З)
-- 315° — Северо-запад (СЗ)
+Направление можно указывать буквами или в градусах:
+
+| Буквы | Градусы | Направление |
+|-------|---------|-------------|
+| С, N | 0° | Север |
+| СВ, NE | 45° | Северо-восток |
+| В, E | 90° | Восток |
+| ЮВ, SE | 135° | Юго-восток |
+| Ю, S | 180° | Юг |
+| ЮЗ, SW | 225° | Юго-запад |
+| З, W | 270° | Запад |
+| СЗ, NW | 315° | Северо-запад |
 
 Пустой массив `[]` означает, что допустимы все направления.
+
+Примеры:
+```toml
+wind_directions = ["С", "СВ", "СЗ"]  # Буквенные обозначения
+wind_directions = [0, 45, 315]       # Градусы
+```
 
 ## Логика уведомлений
 
