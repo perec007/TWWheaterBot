@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict
 import pytz
 
 from ..database.models import Location
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 class HourlyWeather:
     """Standardized hourly weather data from any source."""
     datetime: datetime
+    date_str: str  # YYYY-MM-DD
     hour: int  # 0-23
     temperature: float
     feels_like: float
@@ -26,7 +28,8 @@ class HourlyWeather:
     wind_speed: float  # m/s
     wind_gust: float  # m/s
     wind_direction: int  # degrees
-    cloud_cover: float  # percentage
+    cloud_base_m: float  # height of cloud base in meters
+    fog_probability: float  # 0-100%
     precipitation_probability: float  # percentage
     visibility: float  # km
     
@@ -51,52 +54,107 @@ class ConditionCheck:
 
 
 @dataclass
-class HourlyAnalysis:
-    """Analysis result for a single hour."""
-    hour: int
-    datetime: datetime
-    is_flyable: bool
-    checks: List[ConditionCheck] = field(default_factory=list)
-    failed_conditions: List[str] = field(default_factory=list)
+class FlyableWindowInfo:
+    """Information about a single flyable window."""
+    date: str  # YYYY-MM-DD
+    start_hour: int  # 0-23
+    end_hour: int  # 0-23
+    duration_hours: int
+    
+    # Which source(s) report this window: "both", "openweather", "visualcrossing"
+    source: str = "both"
+    
+    # Weather statistics for the window
+    avg_temp: float = 0.0
+    min_temp: float = 0.0
+    max_temp: float = 0.0
+    avg_wind_speed: float = 0.0
+    max_wind_speed: float = 0.0
+    avg_humidity: float = 0.0
+    max_precipitation_prob: float = 0.0
+    avg_cloud_base_m: float = 0.0
+    max_fog_probability: float = 0.0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "date": self.date,
+            "start_hour": self.start_hour,
+            "end_hour": self.end_hour,
+            "duration_hours": self.duration_hours,
+            "source": self.source,
+            "avg_temp": round(self.avg_temp, 1),
+            "min_temp": round(self.min_temp, 1),
+            "max_temp": round(self.max_temp, 1),
+            "avg_wind_speed": round(self.avg_wind_speed, 1),
+            "max_wind_speed": round(self.max_wind_speed, 1),
+            "avg_humidity": round(self.avg_humidity, 1),
+            "max_precipitation_prob": round(self.max_precipitation_prob, 1),
+            "avg_cloud_base_m": round(self.avg_cloud_base_m, 0),
+            "max_fog_probability": round(self.max_fog_probability, 0),
+        }
+    
+    def to_display_string(self) -> str:
+        """Format window for display."""
+        return f"{self.date} {self.start_hour:02d}:00-{self.end_hour:02d}:00 ({self.duration_hours}ч)"
 
 
 @dataclass
-class AnalysisResult:
-    """Complete analysis result for a location."""
+class FullForecastAnalysis:
+    """Complete analysis result for a location across the entire forecast period."""
     location_id: int
     location_name: str
-    date: str
-    is_flyable: bool
-    flyable_window_start: Optional[str] = None  # HH:MM
-    flyable_window_end: Optional[str] = None  # HH:MM
-    flyable_hours: List[int] = field(default_factory=list)
-    continuous_hours: int = 0
-    rejection_reasons: List[str] = field(default_factory=list)
-    hourly_analysis: List[HourlyAnalysis] = field(default_factory=list)
+    analysis_time: datetime
     
-    # Current conditions summary
-    current_temp: Optional[float] = None
-    current_wind_speed: Optional[float] = None
-    current_wind_direction: Optional[int] = None
-    current_humidity: Optional[float] = None
-    current_cloud_cover: Optional[float] = None
+    # Forecast horizon
+    forecast_start: datetime
+    forecast_end: datetime
+    total_hours_analyzed: int = 0
+    
+    # Flyable windows found
+    flyable_windows: List[FlyableWindowInfo] = field(default_factory=list)
+    total_flyable_hours: int = 0
+    
+    # Status flags
+    has_flyable_conditions: bool = False
+    
+    # Rejection reasons (when no flyable windows found)
+    rejection_reasons: List[str] = field(default_factory=list)
     
     # Data sources used
     openweather_available: bool = False
     visualcrossing_available: bool = False
+    openweather_hours: int = 0
+    visualcrossing_hours: int = 0
+    
+    # Current conditions summary (nearest hour)
+    current_temp: Optional[float] = None
+    current_wind_speed: Optional[float] = None
+    current_wind_direction: Optional[int] = None
+    current_humidity: Optional[float] = None
+    current_cloud_base_m: Optional[float] = None
+    current_fog_probability: Optional[float] = None
+
+    def get_windows_for_date(self, date_str: str) -> List[FlyableWindowInfo]:
+        """Get all windows for a specific date."""
+        return [w for w in self.flyable_windows if w.date == date_str]
+    
+    def get_next_flyable_window(self) -> Optional[FlyableWindowInfo]:
+        """Get the nearest upcoming flyable window."""
+        if self.flyable_windows:
+            return self.flyable_windows[0]
+        return None
 
 
 class WeatherAnalyzer:
     """
-    Analyzes weather data to determine flyable conditions.
-    
-    The analyzer combines data from multiple sources and checks against
-    location-specific rules to determine if conditions are suitable for flying.
+    Analyzes weather data to determine flyable conditions across the entire forecast period.
     
     Key features:
-    - Requires both data sources to agree on flyable conditions
-    - Finds continuous time windows where all conditions are met
-    - Tracks rejection reasons for user feedback
+    - Analyzes ALL days in the forecast, not just today
+    - Shows flyable windows from both sources, or from either source alone
+    - Finds continuous time windows where conditions are met
+    - Returns multiple flyable windows if they exist
     """
     
     def __init__(self, timezone: pytz.timezone = pytz.UTC):
@@ -108,35 +166,31 @@ class WeatherAnalyzer:
         """
         self.timezone = timezone
     
-    def analyze(
+    def analyze_full_forecast(
         self,
         location: Location,
         openweather_data: Optional[Dict[str, Any]],
-        visualcrossing_data: Optional[Dict[str, Any]],
-        check_date: Optional[datetime] = None
-    ) -> AnalysisResult:
+        visualcrossing_data: Optional[Dict[str, Any]]
+    ) -> FullForecastAnalysis:
         """
-        Analyze weather data for a location.
+        Analyze weather data across the entire forecast period.
         
         Args:
             location: Location with weather rules
             openweather_data: Parsed OpenWeather API response
             visualcrossing_data: Parsed VisualCrossing API response
-            check_date: Date to analyze (defaults to today)
         
         Returns:
-            AnalysisResult with flyable determination and details
+            FullForecastAnalysis with all found flyable windows
         """
-        if check_date is None:
-            check_date = datetime.now(self.timezone)
+        now = datetime.now(self.timezone)
         
-        date_str = check_date.strftime("%Y-%m-%d")
-        
-        result = AnalysisResult(
+        result = FullForecastAnalysis(
             location_id=location.id,
             location_name=location.name,
-            date=date_str,
-            is_flyable=False,
+            analysis_time=now,
+            forecast_start=now,
+            forecast_end=now,
             openweather_available=openweather_data is not None,
             visualcrossing_available=visualcrossing_data is not None
         )
@@ -149,99 +203,98 @@ class WeatherAnalyzer:
                 result.rejection_reasons.append("❌ Нет данных от VisualCrossing")
             return result
         
-        # Parse hourly data from both sources
-        ow_hourly = self._parse_hourly_data(openweather_data, "openweather", check_date)
-        vc_hourly = self._parse_hourly_data(visualcrossing_data, "visualcrossing", check_date)
+        # Parse all hourly data from both sources
+        ow_hourly = self._parse_all_hourly_data(openweather_data, "openweather")
+        vc_hourly = self._parse_all_hourly_data(visualcrossing_data, "visualcrossing")
+        
+        result.openweather_hours = len(ow_hourly)
+        result.visualcrossing_hours = len(vc_hourly)
         
         if not ow_hourly or not vc_hourly:
             result.rejection_reasons.append("❌ Нет почасовых данных в прогнозах")
             return result
         
-        # Get time window hours
-        start_hour = location.time_window_start
-        end_hour = location.time_window_end
+        # Group hourly data by date
+        ow_by_date = self._group_by_date(ow_hourly)
+        vc_by_date = self._group_by_date(vc_hourly)
         
-        # Analyze each hour in the time window
-        flyable_hours = []
+        # Get all dates present in both sources
+        all_dates = sorted(set(ow_by_date.keys()) & set(vc_by_date.keys()))
         
-        for hour in range(start_hour, end_hour + 1):
-            ow_hour_data = self._get_hour_data(ow_hourly, hour)
-            vc_hour_data = self._get_hour_data(vc_hourly, hour)
+        if not all_dates:
+            result.rejection_reasons.append("❌ Нет совпадающих дат в прогнозах")
+            return result
+        
+        # Update forecast horizon
+        result.forecast_start = datetime.strptime(all_dates[0], "%Y-%m-%d")
+        result.forecast_start = self.timezone.localize(result.forecast_start)
+        result.forecast_end = datetime.strptime(all_dates[-1], "%Y-%m-%d")
+        result.forecast_end = self.timezone.localize(result.forecast_end)
+        
+        # Analyze each date: union of flyable hours from all sources → max continuous windows
+        all_flyable_windows = []
+        total_hours = 0
+        
+        for date_str in all_dates:
+            ow_day_data = ow_by_date.get(date_str, [])
+            vc_day_data = vc_by_date.get(date_str, [])
             
-            if not ow_hour_data or not vc_hour_data:
-                continue
-            
-            # Check conditions against both sources
-            ow_analysis = self._check_hour_conditions(ow_hour_data, location)
-            vc_analysis = self._check_hour_conditions(vc_hour_data, location)
-            
-            # Hour is flyable only if BOTH sources say it's flyable
-            hour_flyable = ow_analysis.is_flyable and vc_analysis.is_flyable
-            
-            # Combine failed conditions from both sources
-            combined_failed = list(set(ow_analysis.failed_conditions + vc_analysis.failed_conditions))
-            
-            hourly_result = HourlyAnalysis(
-                hour=hour,
-                datetime=ow_hour_data.datetime,
-                is_flyable=hour_flyable,
-                checks=ow_analysis.checks + vc_analysis.checks,
-                failed_conditions=combined_failed
+            hours_both, hours_ow_only, hours_vc_only = self._find_flyable_hours_for_day(
+                location, ow_day_data, vc_day_data
             )
+            # Union: любой источник считает час лётным → включаем в окно (максимум часов)
+            hours_union = sorted(set(hours_both) | set(hours_ow_only) | set(hours_vc_only))
+            total_hours += len(hours_union)
             
-            result.hourly_analysis.append(hourly_result)
+            req = location.required_conditions_duration_hours
+            combined_hourly = ow_day_data + vc_day_data
             
-            if hour_flyable:
-                flyable_hours.append(hour)
-        
-        result.flyable_hours = flyable_hours
-        
-        # Find continuous window
-        continuous_window = self._find_continuous_window(
-            flyable_hours, 
-            location.required_conditions_duration_hours
-        )
-        
-        if continuous_window:
-            result.is_flyable = True
-            result.flyable_window_start = f"{continuous_window[0]:02d}:00"
-            result.flyable_window_end = f"{continuous_window[-1]:02d}:00"
-            result.continuous_hours = len(continuous_window)
-        else:
-            # Build rejection reasons
-            if not flyable_hours:
-                result.rejection_reasons.append(
-                    f"❌ Нет часов, удовлетворяющих всем критериям в окне {start_hour:02d}:00-{end_hour:02d}:00"
+            # Окна по объединённым часам — максимальная непрерывная длина
+            raw_windows = self._find_continuous_windows(
+                date_str, hours_union, req, combined_hourly, source="both"
+            )
+            # Для каждого окна определяем источник по входящим часам
+            for w in raw_windows:
+                window_hours = set(range(w.start_hour, w.end_hour + 1))
+                w.source = self._window_source(
+                    window_hours, set(hours_both), set(hours_ow_only), set(hours_vc_only)
                 )
-            else:
-                result.rejection_reasons.append(
-                    f"❌ Требуется {location.required_conditions_duration_hours} непрерывных часов, "
-                    f"доступно только {len(flyable_hours)} час(ов) в разное время"
-                )
-            
-            # Add specific failed conditions
-            self._add_detailed_rejection_reasons(result, location)
+            all_flyable_windows.extend(raw_windows)
         
-        # Add current conditions from the nearest hour
+        # Sort by date, then start_hour
+        all_flyable_windows.sort(key=lambda w: (w.date, w.start_hour))
+        result.flyable_windows = all_flyable_windows
+        result.total_flyable_hours = total_hours
+        result.total_hours_analyzed = sum(len(ow_by_date.get(d, [])) for d in all_dates)
+        result.has_flyable_conditions = len(all_flyable_windows) > 0
+        
+        # If no flyable windows found, add rejection reasons
+        if not all_flyable_windows:
+            result.rejection_reasons.append(
+                f"❌ Не найдено непрерывных окон минимум {location.required_conditions_duration_hours} ч."
+            )
+            if total_hours > 0:
+                result.rejection_reasons.append(
+                    f"ℹ️ Найдено {total_hours} лётных часов, но не подряд"
+                )
+        
+        # Set current conditions from nearest hour
         self._set_current_conditions(result, ow_hourly, vc_hourly)
         
         return result
     
-    def _parse_hourly_data(
+    def _parse_all_hourly_data(
         self, 
         data: Dict[str, Any], 
-        source: str,
-        target_date: datetime
+        source: str
     ) -> List[HourlyWeather]:
-        """Parse raw API data into standardized hourly format."""
+        """Parse ALL hourly data from API response, not filtered by date."""
         hourly_list = []
-        target_date_str = target_date.strftime("%Y-%m-%d")
         
         for hour_data in data.get("hourly", []):
             # Parse datetime
             dt_str = hour_data.get("datetime", "")
             
-            # Handle different datetime formats
             try:
                 if " " in dt_str:
                     # Format: "YYYY-MM-DD HH:MM:SS"
@@ -261,12 +314,11 @@ class WeatherAnalyzer:
             if dt.tzinfo is None:
                 dt = self.timezone.localize(dt)
             
-            # Filter to target date
-            if dt.strftime("%Y-%m-%d") != target_date_str:
-                continue
+            date_str = dt.strftime("%Y-%m-%d")
             
             hourly = HourlyWeather(
                 datetime=dt,
+                date_str=date_str,
                 hour=dt.hour,
                 temperature=hour_data.get("temperature", 0),
                 feels_like=hour_data.get("feels_like", 0),
@@ -275,7 +327,8 @@ class WeatherAnalyzer:
                 wind_speed=hour_data.get("wind_speed", 0),
                 wind_gust=hour_data.get("wind_gust", 0),
                 wind_direction=int(hour_data.get("wind_direction", 0)),
-                cloud_cover=hour_data.get("cloud_cover", 0),
+                cloud_base_m=float(hour_data.get("cloud_base_m", 0)),
+                fog_probability=float(hour_data.get("fog_probability", 0)),
                 precipitation_probability=hour_data.get("precipitation_probability", 0),
                 visibility=hour_data.get("visibility", 10),
                 precipitation_mm=hour_data.get("precipitation_mm", hour_data.get("rain_mm", 0)),
@@ -291,156 +344,87 @@ class WeatherAnalyzer:
         
         return hourly_list
     
-    def _get_hour_data(
-        self, 
-        hourly_list: List[HourlyWeather], 
-        hour: int
-    ) -> Optional[HourlyWeather]:
-        """Get data for a specific hour."""
+    def _group_by_date(self, hourly_list: List[HourlyWeather]) -> Dict[str, List[HourlyWeather]]:
+        """Group hourly data by date."""
+        by_date = defaultdict(list)
         for h in hourly_list:
-            if h.hour == hour:
-                return h
-        return None
+            by_date[h.date_str].append(h)
+        return dict(by_date)
     
-    def _check_hour_conditions(
-        self, 
-        weather: HourlyWeather, 
-        location: Location
-    ) -> HourlyAnalysis:
-        """Check all conditions for a single hour."""
-        checks = []
-        failed_conditions = []
+    def _find_flyable_hours_for_day(
+        self,
+        location: Location,
+        ow_day_data: List[HourlyWeather],
+        vc_day_data: List[HourlyWeather]
+    ) -> Tuple[List[int], List[int], List[int]]:
+        """
+        Find flyable hours for a single day per source.
+        Returns (hours_both, hours_ow_only, hours_vc_only).
+        """
+        ow_by_hour = {h.hour: h for h in ow_day_data}
+        vc_by_hour = {h.hour: h for h in vc_day_data}
+        start_hour = location.time_window_start
+        end_hour = location.time_window_end
         
-        # Temperature check
-        temp_check = ConditionCheck(
-            name="temperature",
-            passed=location.temp_min <= weather.temperature <= location.temp_max,
-            actual_value=weather.temperature,
-            limit_value=f"{location.temp_min}-{location.temp_max}°C",
-            message=f"Температура: {weather.temperature}°C"
-        )
-        checks.append(temp_check)
-        if not temp_check.passed:
-            if weather.temperature < location.temp_min:
-                failed_conditions.append(f"🌡 Слишком холодно: {weather.temperature}°C (мин. {location.temp_min}°C)")
-            else:
-                failed_conditions.append(f"🌡 Слишком жарко: {weather.temperature}°C (макс. {location.temp_max}°C)")
+        hours_both = []
+        hours_ow_only = []
+        hours_vc_only = []
         
-        # Humidity check
-        humidity_check = ConditionCheck(
-            name="humidity",
-            passed=weather.humidity <= location.humidity_max,
-            actual_value=weather.humidity,
-            limit_value=f"≤{location.humidity_max}%",
-            message=f"Влажность: {weather.humidity}%"
-        )
-        checks.append(humidity_check)
-        if not humidity_check.passed:
-            failed_conditions.append(f"💧 Высокая влажность: {weather.humidity}% (макс. {location.humidity_max}%)")
+        for hour in range(start_hour, end_hour + 1):
+            ow_hour = ow_by_hour.get(hour)
+            vc_hour = vc_by_hour.get(hour)
+            
+            ow_flyable = self._check_hour_flyable(ow_hour, location) if ow_hour else False
+            vc_flyable = self._check_hour_flyable(vc_hour, location) if vc_hour else False
+            
+            if ow_flyable and vc_flyable:
+                hours_both.append(hour)
+            elif ow_flyable:
+                hours_ow_only.append(hour)
+            elif vc_flyable:
+                hours_vc_only.append(hour)
         
-        # Wind speed check
-        wind_check = ConditionCheck(
-            name="wind_speed",
-            passed=weather.wind_speed <= location.wind_speed_max,
-            actual_value=weather.wind_speed,
-            limit_value=f"≤{location.wind_speed_max} м/с",
-            message=f"Ветер: {weather.wind_speed:.1f} м/с"
-        )
-        checks.append(wind_check)
-        if not wind_check.passed:
-            failed_conditions.append(f"💨 Сильный ветер: {weather.wind_speed:.1f} м/с (макс. {location.wind_speed_max} м/с)")
+        return (hours_both, hours_ow_only, hours_vc_only)
+    
+    def _check_hour_flyable(self, weather: HourlyWeather, location: Location) -> bool:
+        """Check if all conditions are met for a single hour."""
+        # Temperature (minimum only; no upper limit)
+        if weather.temperature < location.temp_min:
+            return False
         
-        # Wind gust check (using same limit as wind speed * 1.5)
+        # Humidity
+        if weather.humidity > location.humidity_max:
+            return False
+        
+        # Wind speed
+        if weather.wind_speed > location.wind_speed_max:
+            return False
+        
+        # Wind gust
         gust_limit = location.wind_speed_max * 1.5
-        gust_check = ConditionCheck(
-            name="wind_gust",
-            passed=weather.wind_gust <= gust_limit,
-            actual_value=weather.wind_gust,
-            limit_value=f"≤{gust_limit:.1f} м/с",
-            message=f"Порывы: {weather.wind_gust:.1f} м/с"
-        )
-        checks.append(gust_check)
-        if not gust_check.passed:
-            failed_conditions.append(f"💨 Сильные порывы: {weather.wind_gust:.1f} м/с (макс. {gust_limit:.1f} м/с)")
+        if weather.wind_gust > gust_limit:
+            return False
         
-        # Wind direction check
+        # Wind direction
         allowed_directions = location.get_wind_directions_list()
         if allowed_directions:
-            direction_ok = self._check_wind_direction(
+            if not self._check_wind_direction(
                 weather.wind_direction,
                 allowed_directions,
                 location.wind_direction_tolerance
-            )
-            direction_check = ConditionCheck(
-                name="wind_direction",
-                passed=direction_ok,
-                actual_value=weather.wind_direction,
-                limit_value=f"{allowed_directions}° ±{location.wind_direction_tolerance}°",
-                message=f"Направление: {weather.wind_direction}°"
-            )
-            checks.append(direction_check)
-            if not direction_check.passed:
-                failed_conditions.append(
-                    f"🧭 Неподходящее направление ветра: {weather.wind_direction}° "
-                    f"(допустимо: {allowed_directions}°)"
-                )
+            ):
+                return False
         
-        # Dew point spread check
+        # Dew point spread
         dew_spread = weather.temperature - weather.dew_point
-        dew_check = ConditionCheck(
-            name="dew_point_spread",
-            passed=dew_spread >= location.dew_point_spread_min,
-            actual_value=dew_spread,
-            limit_value=f"≥{location.dew_point_spread_min}°C",
-            message=f"Разница с точкой росы: {dew_spread:.1f}°C"
-        )
-        checks.append(dew_check)
-        if not dew_check.passed:
-            failed_conditions.append(
-                f"🌫 Близко к точке росы: разница {dew_spread:.1f}°C "
-                f"(мин. {location.dew_point_spread_min}°C)"
-            )
+        if dew_spread < location.dew_point_spread_min:
+            return False
         
-        # Precipitation probability check
-        precip_check = ConditionCheck(
-            name="precipitation_probability",
-            passed=weather.precipitation_probability <= location.precipitation_probability_max,
-            actual_value=weather.precipitation_probability,
-            limit_value=f"≤{location.precipitation_probability_max}%",
-            message=f"Вероятность осадков: {weather.precipitation_probability}%"
-        )
-        checks.append(precip_check)
-        if not precip_check.passed:
-            failed_conditions.append(
-                f"🌧 Высокая вероятность осадков: {weather.precipitation_probability}% "
-                f"(макс. {location.precipitation_probability_max}%)"
-            )
+        # Precipitation probability
+        if weather.precipitation_probability > location.precipitation_probability_max:
+            return False
         
-        # Cloud cover check
-        cloud_check = ConditionCheck(
-            name="cloud_cover",
-            passed=weather.cloud_cover <= location.cloud_cover_max,
-            actual_value=weather.cloud_cover,
-            limit_value=f"≤{location.cloud_cover_max}%",
-            message=f"Облачность: {weather.cloud_cover}%"
-        )
-        checks.append(cloud_check)
-        if not cloud_check.passed:
-            failed_conditions.append(
-                f"☁️ Высокая облачность: {weather.cloud_cover}% "
-                f"(макс. {location.cloud_cover_max}%)"
-            )
-        
-        # Determine if all conditions pass
-        all_passed = all(check.passed for check in checks)
-        
-        return HourlyAnalysis(
-            hour=weather.hour,
-            datetime=weather.datetime,
-            is_flyable=all_passed,
-            checks=checks,
-            failed_conditions=failed_conditions
-        )
+        return True
     
     def _check_wind_direction(
         self, 
@@ -448,117 +432,143 @@ class WeatherAnalyzer:
         allowed: List[int], 
         tolerance: int
     ) -> bool:
-        """
-        Check if wind direction is within allowed directions.
-        Handles wraparound at 360 degrees.
-        """
+        """Check if wind direction is within allowed directions."""
         for allowed_dir in allowed:
             diff = abs(actual - allowed_dir)
-            # Handle wraparound
             if diff > 180:
                 diff = 360 - diff
             if diff <= tolerance:
                 return True
         return False
     
-    def _find_continuous_window(
-        self, 
-        flyable_hours: List[int], 
-        required_hours: int
-    ) -> Optional[List[int]]:
-        """
-        Find a continuous window of flyable hours.
-        
-        Returns the first continuous window of at least required_hours length,
-        or None if no such window exists.
-        """
+    def _window_source(
+        self,
+        window_hours: set,
+        hours_both: set,
+        hours_ow_only: set,
+        hours_vc_only: set
+    ) -> str:
+        """Determine source label for a window: both, openweather, visualcrossing, or mixed."""
+        if not window_hours:
+            return "both"
+        in_both = bool(window_hours & hours_both)
+        in_ow = bool(window_hours & hours_ow_only) or in_both
+        in_vc = bool(window_hours & hours_vc_only) or in_both
+        if window_hours <= hours_both:
+            return "both"
+        if window_hours <= (hours_both | hours_ow_only) and not (window_hours & hours_vc_only):
+            return "openweather"
+        if window_hours <= (hours_both | hours_vc_only) and not (window_hours & hours_ow_only):
+            return "visualcrossing"
+        return "mixed"
+
+    def _find_continuous_windows(
+        self,
+        date_str: str,
+        flyable_hours: List[int],
+        required_hours: int,
+        all_hourly_data: List[HourlyWeather],
+        source: str = "both"
+    ) -> List[FlyableWindowInfo]:
+        """Find continuous windows of flyable hours and calculate statistics."""
         if len(flyable_hours) < required_hours:
-            return None
+            return []
         
-        # Sort hours
         sorted_hours = sorted(flyable_hours)
+        windows = []
         
-        # Find continuous sequences
         current_sequence = [sorted_hours[0]]
-        best_sequence = []
-        
         for i in range(1, len(sorted_hours)):
             if sorted_hours[i] == sorted_hours[i-1] + 1:
-                # Continuous
                 current_sequence.append(sorted_hours[i])
             else:
-                # Gap found
                 if len(current_sequence) >= required_hours:
-                    if not best_sequence or len(current_sequence) > len(best_sequence):
-                        best_sequence = current_sequence.copy()
+                    window = self._create_window_info(
+                        date_str, current_sequence, all_hourly_data, source=source
+                    )
+                    windows.append(window)
                 current_sequence = [sorted_hours[i]]
         
-        # Check last sequence
         if len(current_sequence) >= required_hours:
-            if not best_sequence or len(current_sequence) > len(best_sequence):
-                best_sequence = current_sequence.copy()
+            window = self._create_window_info(
+                date_str, current_sequence, all_hourly_data, source=source
+            )
+            windows.append(window)
         
-        return best_sequence if best_sequence else None
+        return windows
     
-    def _add_detailed_rejection_reasons(
-        self, 
-        result: AnalysisResult, 
-        location: Location
-    ) -> None:
-        """Add detailed rejection reasons based on hourly analysis."""
-        # Collect all unique failed conditions
-        condition_counts = {}
+    def _create_window_info(
+        self,
+        date_str: str,
+        hours: List[int],
+        all_hourly_data: List[HourlyWeather],
+        source: str = "both"
+    ) -> FlyableWindowInfo:
+        """Create a FlyableWindowInfo with statistics from the window hours."""
+        window_data = [
+            h for h in all_hourly_data
+            if h.date_str == date_str and h.hour in hours
+        ]
         
-        for hour_analysis in result.hourly_analysis:
-            for condition in hour_analysis.failed_conditions:
-                # Extract condition type (first word/emoji)
-                condition_key = condition.split(":")[0].strip()
-                if condition_key not in condition_counts:
-                    condition_counts[condition_key] = []
-                condition_counts[condition_key].append(hour_analysis.hour)
+        window = FlyableWindowInfo(
+            date=date_str,
+            start_hour=hours[0],
+            end_hour=hours[-1],
+            duration_hours=len(hours),
+            source=source
+        )
         
-        # Add most common problems
-        for condition_key, hours in sorted(
-            condition_counts.items(), 
-            key=lambda x: -len(x[1])
-        ):
-            if len(hours) > len(result.hourly_analysis) // 2:
-                hours_str = ", ".join(f"{h:02d}:00" for h in sorted(hours)[:5])
-                if len(hours) > 5:
-                    hours_str += f" и ещё {len(hours) - 5} час(ов)"
-                result.rejection_reasons.append(
-                    f"{condition_key} в часы: {hours_str}"
-                )
+        if window_data:
+            temps = [h.temperature for h in window_data]
+            winds = [h.wind_speed for h in window_data]
+            humidities = [h.humidity for h in window_data]
+            precip_probs = [h.precipitation_probability for h in window_data]
+            cloud_bases = [h.cloud_base_m for h in window_data]
+            fog_probs = [h.fog_probability for h in window_data]
+            window.avg_temp = sum(temps) / len(temps)
+            window.min_temp = min(temps)
+            window.max_temp = max(temps)
+            window.avg_wind_speed = sum(winds) / len(winds)
+            window.max_wind_speed = max(winds)
+            window.avg_humidity = sum(humidities) / len(humidities)
+            window.max_precipitation_prob = max(precip_probs)
+            window.avg_cloud_base_m = sum(cloud_bases) / len(cloud_bases)
+            window.max_fog_probability = max(fog_probs) if fog_probs else 0
+        
+        return window
     
     def _set_current_conditions(
         self, 
-        result: AnalysisResult,
+        result: FullForecastAnalysis,
         ow_hourly: List[HourlyWeather],
         vc_hourly: List[HourlyWeather]
     ) -> None:
-        """Set current weather conditions in result from nearest hour."""
+        """Set current weather conditions from nearest hour."""
         now = datetime.now(self.timezone)
         current_hour = now.hour
+        today_str = now.strftime("%Y-%m-%d")
         
-        # Find nearest hour in data
+        # Find nearest hour in OpenWeather data
         for hourly in ow_hourly:
-            if hourly.hour == current_hour:
+            if hourly.date_str == today_str and hourly.hour == current_hour:
                 result.current_temp = hourly.temperature
                 result.current_wind_speed = hourly.wind_speed
                 result.current_wind_direction = hourly.wind_direction
                 result.current_humidity = hourly.humidity
-                result.current_cloud_cover = hourly.cloud_cover
+                result.current_cloud_base_m = hourly.cloud_base_m
+                result.current_fog_probability = hourly.fog_probability
                 break
         
-        # If not found in OpenWeather, try VisualCrossing
+        # Fallback to VisualCrossing
         if result.current_temp is None:
             for hourly in vc_hourly:
-                if hourly.hour == current_hour:
+                if hourly.date_str == today_str and hourly.hour == current_hour:
                     result.current_temp = hourly.temperature
                     result.current_wind_speed = hourly.wind_speed
                     result.current_wind_direction = hourly.wind_direction
                     result.current_humidity = hourly.humidity
-                    result.current_cloud_cover = hourly.cloud_cover
+                    result.current_cloud_base_m = hourly.cloud_base_m
+                    result.current_fog_probability = hourly.fog_probability
                     break
     
     def get_wind_direction_name(self, degrees: int) -> str:
@@ -571,3 +581,14 @@ class WeatherAnalyzer:
         ]
         idx = round(degrees / 22.5) % 16
         return directions[idx]
+    
+    # Legacy method for backward compatibility
+    def analyze(
+        self,
+        location: Location,
+        openweather_data: Optional[Dict[str, Any]],
+        visualcrossing_data: Optional[Dict[str, Any]],
+        check_date: Optional[datetime] = None
+    ):
+        """Legacy method - redirects to analyze_full_forecast."""
+        return self.analyze_full_forecast(location, openweather_data, visualcrossing_data)

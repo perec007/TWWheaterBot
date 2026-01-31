@@ -32,8 +32,11 @@ class Config:
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     
+    # Debug mode - send diagnostic messages to admins after each API call
+    DEBUG_MODE: bool = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+    
     # Database
-    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/weather_bot.db")
+    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "database/weather_bot.db")
     
     # Admin user IDs (comma-separated in env)
     _admin_ids_str: str = os.getenv("ADMIN_USER_IDS", "")

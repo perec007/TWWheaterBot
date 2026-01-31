@@ -40,33 +40,33 @@ class OpenWeatherClient:
     async def get_hourly_forecast(
         self, 
         latitude: float, 
-        longitude: float,
-        hours: int = 48
+        longitude: float
     ) -> Optional[Dict[str, Any]]:
         """
         Get hourly weather forecast for a location.
         
+        Uses the free tier forecast endpoint which provides:
+        - 5-day forecast with 3-hour intervals
+        - Maximum 40 data points
+        
         Args:
             latitude: Location latitude
             longitude: Location longitude
-            hours: Number of hours to forecast (max 48 for free tier)
         
         Returns:
             Dictionary with hourly forecast data or None on error
         """
         session = await self._get_session()
         
-        # Use One Call API 3.0 for hourly data
-        # Fall back to forecast API if One Call is not available
         try:
-            # First try the forecast endpoint (free tier)
+            # Use forecast endpoint (free tier) - returns 5 days with 3-hour intervals
             url = f"{self.BASE_URL}/forecast"
             params = {
                 "lat": latitude,
                 "lon": longitude,
                 "appid": self.api_key,
                 "units": "metric",  # Celsius
-                "cnt": min(hours // 3, 40)  # 3-hour intervals, max 40
+                "cnt": 40  # Maximum: 40 data points (5 days * 8 intervals per day)
             }
             
             async with session.get(url, params=params) as response:
@@ -87,6 +87,18 @@ class OpenWeatherClient:
             logger.error(f"OpenWeather unexpected error: {e}")
             return None
     
+    @staticmethod
+    def _fog_probability(weather_main: str, weather_desc: str, visibility_km: float) -> int:
+        """Вероятность тумана 0–100% по условиям и видимости."""
+        cond = (weather_main + " " + (weather_desc or "")).lower()
+        if any(x in cond for x in ("fog", "mist", "haze", "туман")):
+            return 100
+        if visibility_km and visibility_km < 1:
+            return 80
+        if visibility_km and visibility_km < 2:
+            return 50
+        return 0
+
     def _parse_forecast_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parse OpenWeather forecast response into standardized format.
@@ -124,6 +136,13 @@ class OpenWeatherClient:
             else:
                 dew_point = temp
             
+            visibility_km = item.get("visibility", 10000) / 1000
+            weather_main = item.get("weather", [{}])[0].get("main", "")
+            weather_desc = item.get("weather", [{}])[0].get("description", "")
+            # Высота нижней кромки облаков (м): приближение LCL ≈ 125*(T-Td)
+            cloud_base_m = max(0, 125 * (temp - dew_point)) if temp > dew_point else 0
+            fog_probability = self._fog_probability(weather_main, weather_desc, visibility_km)
+
             hourly_item = {
                 "datetime": item.get("dt_txt", ""),
                 "timestamp": item.get("dt", 0),
@@ -134,13 +153,14 @@ class OpenWeatherClient:
                 "wind_speed": wind.get("speed", 0),
                 "wind_gust": wind.get("gust", wind.get("speed", 0)),
                 "wind_direction": wind.get("deg", 0),
-                "cloud_cover": clouds.get("all", 0),
+                "cloud_base_m": round(cloud_base_m, 0),
+                "fog_probability": fog_probability,
                 "precipitation_probability": pop,
                 "rain_mm": rain.get("3h", 0),
                 "snow_mm": snow.get("3h", 0),
-                "visibility": item.get("visibility", 10000) / 1000,  # Convert to km
-                "weather_condition": item.get("weather", [{}])[0].get("main", ""),
-                "weather_description": item.get("weather", [{}])[0].get("description", ""),
+                "visibility": visibility_km,
+                "weather_condition": weather_main,
+                "weather_description": weather_desc,
             }
             
             hourly_data.append(hourly_item)
@@ -214,6 +234,12 @@ class OpenWeatherClient:
         else:
             dew_point = temp
         
+        visibility_km = data.get("visibility", 10000) / 1000
+        weather_main = data.get("weather", [{}])[0].get("main", "")
+        weather_desc = data.get("weather", [{}])[0].get("description", "")
+        cloud_base_m = max(0, 125 * (temp - dew_point)) if temp > dew_point else 0
+        fog_probability = self._fog_probability(weather_main, weather_desc, visibility_km)
+
         return {
             "source": "openweather",
             "temperature": temp,
@@ -223,9 +249,10 @@ class OpenWeatherClient:
             "wind_speed": wind.get("speed", 0),
             "wind_gust": wind.get("gust", wind.get("speed", 0)),
             "wind_direction": wind.get("deg", 0),
-            "cloud_cover": clouds.get("all", 0),
-            "visibility": data.get("visibility", 10000) / 1000,
-            "weather_condition": data.get("weather", [{}])[0].get("main", ""),
-            "weather_description": data.get("weather", [{}])[0].get("description", ""),
+            "cloud_base_m": round(cloud_base_m, 0),
+            "fog_probability": fog_probability,
+            "visibility": visibility_km,
+            "weather_condition": weather_main,
+            "weather_description": weather_desc,
             "fetched_at": datetime.utcnow().isoformat()
         }

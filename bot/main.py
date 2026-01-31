@@ -125,6 +125,9 @@ class WeatherBot:
         self.application.add_handler(
             CommandHandler("get_config", cmd_handlers.get_config_command)
         )
+        self.application.add_handler(
+            CommandHandler("flywindow", cmd_handlers.flywindow_command)
+        )
         
         # Add conversation handler for /set_config
         self.application.add_handler(config_handler.get_conversation_handler())

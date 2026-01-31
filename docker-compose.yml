@@ -24,11 +24,11 @@ services:
     #   - POLLING_INTERVAL_MINUTES=${POLLING_INTERVAL_MINUTES:-30}
     #   - API_REQUEST_DELAY_SECONDS=${API_REQUEST_DELAY_SECONDS:-2}
     #   - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    #   - DATABASE_PATH=/app/data/weather_bot.db
+    #   - DATABASE_PATH=/app/database/weather_bot.db
     
-    # Volume for persistent database storage
+    # Database in local directory ./database
     volumes:
-      - weather_bot_data:/app/data
+      - ./database:/app/database
     
     # Logging configuration
     logging:
@@ -47,7 +47,4 @@ services:
           cpus: '0.1'
           memory: 64M
 
-# Named volume for database persistence
-volumes:
-  weather_bot_data:
-    driver: local
+

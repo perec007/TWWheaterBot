@@ -126,18 +126,17 @@ class ConfigHandler:
             lines.append(f"time_window_start = {loc.time_window_start}")
             lines.append(f"time_window_end = {loc.time_window_end}")
             lines.append(f"temp_min = {loc.temp_min}")
-            lines.append(f"temp_max = {loc.temp_max}")
             lines.append(f"humidity_max = {loc.humidity_max}")
             lines.append(f"wind_speed_max = {loc.wind_speed_max}")
             
             wind_dirs = loc.get_wind_directions_list()
-            lines.append(f"wind_directions = {wind_dirs}")
-            
+            # Output as letter codes for better readability
+            wind_letters = [MessageTemplates._get_wind_direction_name(d) for d in wind_dirs]
+            lines.append(f'wind_directions = {wind_letters}')
             lines.append(f"wind_direction_tolerance = {loc.wind_direction_tolerance}")
             lines.append(f"dew_point_spread_min = {loc.dew_point_spread_min}")
             lines.append(f"required_conditions_duration_hours = {loc.required_conditions_duration_hours}")
             lines.append(f"precipitation_probability_max = {loc.precipitation_probability_max}")
-            lines.append(f"cloud_cover_max = {loc.cloud_cover_max}")
             lines.append(f"is_active = {str(loc.is_active).lower()}")
             lines.append("")
         
@@ -547,24 +546,80 @@ _Используйте /cancel для отмены_"""
             if start >= end:
                 errors.append(f"{prefix}: 'time_window_start' должен быть меньше 'time_window_end'")
             
-            # Validate temperature
-            temp_min = loc.get("temp_min", 5)
-            temp_max = loc.get("temp_max", 35)
-            if temp_min >= temp_max:
-                errors.append(f"{prefix}: 'temp_min' должен быть меньше 'temp_max'")
+            # Validate temperature (temp_min only; temp_max removed)
             
-            # Validate wind directions
+            # Validate wind directions (accepts letters like "С", "СВ", "В" or degrees 0-360)
             wind_dirs = loc.get("wind_directions", [])
             if wind_dirs:
                 if not isinstance(wind_dirs, list):
                     errors.append(f"{prefix}: 'wind_directions' должен быть массивом")
                 else:
+                    valid_letters = {"С", "ССВ", "СВ", "ВСВ", "В", "ВЮВ", "ЮВ", "ЮЮВ",
+                                     "Ю", "ЮЮЗ", "ЮЗ", "ЗЮЗ", "З", "ЗСЗ", "СЗ", "ССЗ",
+                                     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                                     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
                     for d in wind_dirs:
-                        if not (0 <= d <= 360):
-                            errors.append(f"{prefix}: направление ветра должно быть 0-360")
+                        if isinstance(d, str):
+                            d_upper = d.upper().strip()
+                            if d_upper in valid_letters:
+                                continue  # Valid compass direction
+                            # Try as number
+                            try:
+                                d_val = int(d)
+                                if not (0 <= d_val <= 360):
+                                    errors.append(f"{prefix}: направление ветра должно быть 0-360 или буквы (С, СВ, В и т.д.)")
+                                    break
+                            except ValueError:
+                                errors.append(f"{prefix}: направление ветра '{d}' должно быть буквами (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ) или 0-360")
+                                break
+                        elif isinstance(d, (int, float)):
+                            if not (0 <= d <= 360):
+                                errors.append(f"{prefix}: направление ветра должно быть 0-360")
+                                break
+                        else:
+                            errors.append(f"{prefix}: неверный формат направления ветра")
                             break
         
         return errors
+    
+    # Mapping of compass directions to degrees
+    WIND_DIRECTION_MAP = {
+        "С": 0, "N": 0,
+        "ССВ": 22, "NNE": 22,
+        "СВ": 45, "NE": 45,
+        "ВСВ": 67, "ENE": 67,
+        "В": 90, "E": 90,
+        "ВЮВ": 112, "ESE": 112,
+        "ЮВ": 135, "SE": 135,
+        "ЮЮВ": 157, "SSE": 157,
+        "Ю": 180, "S": 180,
+        "ЮЮЗ": 202, "SSW": 202,
+        "ЮЗ": 225, "SW": 225,
+        "ЗЮЗ": 247, "WSW": 247,
+        "З": 270, "W": 270,
+        "ЗСЗ": 292, "WNW": 292,
+        "СЗ": 315, "NW": 315,
+        "ССЗ": 337, "NNW": 337,
+    }
+    
+    def _normalize_wind_directions(self, wind_dirs: List) -> List[int]:
+        """Convert wind directions (letters or degrees) to list of integers."""
+        result = []
+        for d in wind_dirs:
+            if isinstance(d, str):
+                # Try compass direction first (case-insensitive)
+                d_upper = d.upper().strip()
+                if d_upper in self.WIND_DIRECTION_MAP:
+                    result.append(self.WIND_DIRECTION_MAP[d_upper])
+                else:
+                    # Try as number
+                    try:
+                        result.append(int(d))
+                    except ValueError:
+                        pass  # Invalid, skip
+            elif isinstance(d, (int, float)):
+                result.append(int(d))
+        return result
     
     def _create_location_from_config(
         self, 
@@ -572,7 +627,7 @@ _Используйте /cancel для отмены_"""
         config: Dict[str, Any]
     ) -> Location:
         """Create a Location object from configuration."""
-        wind_directions = config.get("wind_directions", [])
+        wind_directions = self._normalize_wind_directions(config.get("wind_directions", []))
         
         return Location(
             chat_id=chat_id,
@@ -582,7 +637,6 @@ _Используйте /cancel для отмены_"""
             time_window_start=config.get("time_window_start", 8),
             time_window_end=config.get("time_window_end", 18),
             temp_min=config.get("temp_min", 5.0),
-            temp_max=config.get("temp_max", 35.0),
             humidity_max=config.get("humidity_max", 85.0),
             wind_speed_max=config.get("wind_speed_max", 8.0),
             wind_directions=json.dumps(wind_directions),
@@ -605,13 +659,12 @@ _Используйте /cancel для отмены_"""
         location.time_window_start = config.get("time_window_start", location.time_window_start)
         location.time_window_end = config.get("time_window_end", location.time_window_end)
         location.temp_min = config.get("temp_min", location.temp_min)
-        location.temp_max = config.get("temp_max", location.temp_max)
         location.humidity_max = config.get("humidity_max", location.humidity_max)
         location.wind_speed_max = config.get("wind_speed_max", location.wind_speed_max)
         
         wind_directions = config.get("wind_directions")
         if wind_directions is not None:
-            location.wind_directions = json.dumps(wind_directions)
+            location.wind_directions = json.dumps(self._normalize_wind_directions(wind_directions))
         
         location.wind_direction_tolerance = config.get(
             "wind_direction_tolerance", location.wind_direction_tolerance

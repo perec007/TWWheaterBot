@@ -26,8 +26,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY bot/ ./bot/
 
-# Create data directory for SQLite database
-RUN mkdir -p /app/data
+# Create database directory for SQLite
+RUN mkdir -p /app/database
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash botuser && \

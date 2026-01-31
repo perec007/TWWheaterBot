@@ -5,6 +5,7 @@ Handles all bot commands from users.
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from telegram import Update, Chat
@@ -120,19 +121,32 @@ class CommandHandlers:
         logger.info(f"User {user.id} started bot in chat {chat.id}")
     
     async def help_command(
-        self, 
-        update: Update, 
-        context: ContextTypes.DEFAULT_TYPE
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
         """
         Handle /help command.
-        Sends help message with command list.
+        Sends wind directions image, then help message with command list.
         """
+        # Path to wind rose image (bot/static/wind_directions.png)
+        static_dir = Path(__file__).resolve().parent.parent / "static"
+        wind_image_path = static_dir / "wind_directions.png"
+        if wind_image_path.is_file():
+            try:
+                with open(wind_image_path, "rb") as photo_file:
+                    await update.message.reply_photo(
+                        photo=photo_file,
+                        caption="🧭 *Направления ветра*\nС \\= Север, В \\= Восток, Ю \\= Юг, З \\= Запад\nСВ, ЮВ, ЮЗ, СЗ \\= промежуточные",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+            except Exception as e:
+                logger.warning(f"Could not send wind directions image: {e}")
+
         message = MessageTemplates.format_help_message()
-        
         await update.message.reply_text(
             message,
-            parse_mode=ParseMode.MARKDOWN_V2
+            parse_mode=ParseMode.MARKDOWN_V2,
         )
     
     async def list_locations_command(
@@ -242,8 +256,11 @@ class CommandHandlers:
         for location in locations:
             try:
                 result = await self.notifier.check_location(location)
-                status = "✅" if result.is_flyable else "❌"
-                results.append(f"{status} {location.name}")
+                status = "✅" if result.has_flyable_conditions else "❌"
+                windows_info = ""
+                if result.flyable_windows:
+                    windows_info = f" ({len(result.flyable_windows)} окон)"
+                results.append(f"{status} {location.name}{windows_info}")
             except Exception as e:
                 logger.error(f"Error checking {location.name}: {e}")
                 results.append(f"⚠️ {location.name}: ошибка")
@@ -257,7 +274,82 @@ class CommandHandlers:
             summary,
             parse_mode=ParseMode.MARKDOWN_V2
         )
-    
+
+    async def flywindow_command(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """
+        Handle /flywindow command.
+        Shows all current flyable windows with full weather details.
+        """
+        if not await self._is_authorized(update, context):
+            await self._send_unauthorized(update)
+            return
+
+        chat = update.effective_chat
+        locations = await self.db.get_locations_by_chat(chat.id)
+
+        if not locations:
+            await update.message.reply_text(
+                "📍 Нет настроенных локаций\\.\n\n"
+                "Используйте /set\\_config для добавления локаций\\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        await update.message.reply_text(
+            "🔄 Проверяю погоду\\.\\.\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+        locations_with_windows = []
+        for location in locations:
+            try:
+                result = await self.notifier.get_location_status(location)
+                if result and result.flyable_windows:
+                    locations_with_windows.append((location, result))
+            except Exception as e:
+                logger.error(f"Error getting flywindow for {location.name}: {e}")
+
+        if not locations_with_windows:
+            await update.message.reply_text(
+                "🪂 *Лётные окна*\n\nНет подходящих лётных окон в прогнозе\\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        timezone = Config.get_timezone()
+        message = MessageTemplates.format_flywindow_message(
+            locations_with_windows, timezone
+        )
+        max_len = 4096
+        if len(message) <= max_len:
+            await update.message.reply_text(
+                message,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            parts = []
+            current = []
+            current_len = 0
+            for line in message.split("\n"):
+                line_len = len(line) + 1
+                if current_len + line_len > max_len and current:
+                    parts.append("\n".join(current))
+                    current = []
+                    current_len = 0
+                current.append(line)
+                current_len += line_len
+            if current:
+                parts.append("\n".join(current))
+            for part in parts:
+                await update.message.reply_text(
+                    part,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+
     async def get_config_command(
         self, 
         update: Update, 
@@ -394,7 +486,8 @@ class CommandHandlers:
             "wind_speed": None,
             "wind_gust": None,
             "wind_direction": None,
-            "cloud_cover": None,
+            "cloud_base_m": None,
+            "fog_probability": None,
             "pressure": None,
             "visibility": None,
             "dew_point": None,
@@ -410,7 +503,8 @@ class CommandHandlers:
             result["wind_speed"] = ow_data.get("wind_speed")
             result["wind_gust"] = ow_data.get("wind_gust")
             result["wind_direction"] = ow_data.get("wind_direction")
-            result["cloud_cover"] = ow_data.get("cloud_cover")
+            result["cloud_base_m"] = ow_data.get("cloud_base_m")
+            result["fog_probability"] = ow_data.get("fog_probability")
             result["dew_point"] = ow_data.get("dew_point")
             result["visibility"] = ow_data.get("visibility")
             result["weather_condition"] = ow_data.get("weather_condition", "")
@@ -429,8 +523,10 @@ class CommandHandlers:
                 result["wind_speed"] = vc_data.get("wind_speed")
             if result["wind_direction"] is None:
                 result["wind_direction"] = vc_data.get("wind_direction")
-            if result["cloud_cover"] is None:
-                result["cloud_cover"] = vc_data.get("cloud_cover")
+            if result["cloud_base_m"] is None:
+                result["cloud_base_m"] = vc_data.get("cloud_base_m")
+            if result["fog_probability"] is None:
+                result["fog_probability"] = vc_data.get("fog_probability")
             if result["pressure"] is None:
                 result["pressure"] = vc_data.get("pressure")
             if result["dew_point"] is None:

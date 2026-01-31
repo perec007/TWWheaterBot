@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-from .models import Location, ChatSettings, WeatherStatus, WeatherCheck, AdminUser
+from .models import Location, ChatSettings, WeatherStatus, WeatherCheck, AdminUser, WeatherForecast, FlyableWindow
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,6 @@ class Database:
                     time_window_start INTEGER DEFAULT 8,
                     time_window_end INTEGER DEFAULT 18,
                     temp_min REAL DEFAULT 5.0,
-                    temp_max REAL DEFAULT 35.0,
                     humidity_max REAL DEFAULT 85.0,
                     wind_speed_max REAL DEFAULT 8.0,
                     wind_directions TEXT DEFAULT '[]',
@@ -73,6 +72,15 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Migration: drop temp_max if present (SQLite 3.35.0+)
+            try:
+                await cursor.execute("ALTER TABLE locations DROP COLUMN temp_max")
+                await self._connection.commit()
+                logger.info("Migration: dropped column locations.temp_max")
+            except Exception as e:
+                if "no such column" not in str(e).lower():
+                    logger.debug("Migration temp_max: %s", e)
             
             # Chat settings table
             await cursor.execute("""
@@ -97,6 +105,8 @@ class Database:
                     is_flyable INTEGER DEFAULT 0,
                     flyable_window_start TEXT,
                     flyable_window_end TEXT,
+                    active_windows_json TEXT DEFAULT '[]',
+                    last_forecast_id INTEGER,
                     consecutive_not_flyable_checks INTEGER DEFAULT 0,
                     last_notification_type TEXT,
                     last_notification_at TIMESTAMP,
@@ -104,6 +114,48 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (location_id) REFERENCES locations(id),
                     UNIQUE(location_id, date)
+                )
+            """)
+            
+            # Weather forecasts table
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS weather_forecasts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    location_id INTEGER NOT NULL,
+                    check_time TIMESTAMP NOT NULL,
+                    forecast_start TIMESTAMP NOT NULL,
+                    forecast_end TIMESTAMP NOT NULL,
+                    openweather_data TEXT,
+                    visualcrossing_data TEXT,
+                    total_flyable_windows INTEGER DEFAULT 0,
+                    flyable_windows_json TEXT DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (location_id) REFERENCES locations(id)
+                )
+            """)
+            
+            # Flyable windows table
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS flyable_windows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    location_id INTEGER NOT NULL,
+                    forecast_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    start_hour INTEGER NOT NULL,
+                    end_hour INTEGER NOT NULL,
+                    duration_hours INTEGER NOT NULL,
+                    avg_temp REAL,
+                    avg_wind_speed REAL,
+                    max_wind_speed REAL,
+                    avg_humidity REAL,
+                    max_precipitation_prob REAL,
+                    notified INTEGER DEFAULT 0,
+                    notified_at TIMESTAMP,
+                    cancelled INTEGER DEFAULT 0,
+                    cancelled_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (location_id) REFERENCES locations(id),
+                    FOREIGN KEY (forecast_id) REFERENCES weather_forecasts(id)
                 )
             """)
             
@@ -152,6 +204,32 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_admin_users_chat_id 
                 ON admin_users(chat_id)
             """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_weather_forecasts_location_time 
+                ON weather_forecasts(location_id, check_time)
+            """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_flyable_windows_location_date 
+                ON flyable_windows(location_id, date)
+            """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_flyable_windows_forecast 
+                ON flyable_windows(forecast_id)
+            """)
+            
+            # Migration: Add new columns to existing tables
+            try:
+                await cursor.execute("ALTER TABLE weather_status ADD COLUMN active_windows_json TEXT DEFAULT '[]'")
+            except:
+                pass  # Column already exists
+            try:
+                await cursor.execute("ALTER TABLE weather_status ADD COLUMN last_forecast_id INTEGER")
+            except:
+                pass  # Column already exists
+            try:
+                await cursor.execute("ALTER TABLE flyable_windows ADD COLUMN source TEXT DEFAULT 'both'")
+            except:
+                pass  # Column already exists
             
             await self._connection.commit()
     
@@ -166,16 +244,16 @@ class Database:
                 INSERT INTO locations (
                     chat_id, name, latitude, longitude,
                     time_window_start, time_window_end,
-                    temp_min, temp_max, humidity_max,
+                    temp_min, humidity_max,
                     wind_speed_max, wind_directions, wind_direction_tolerance,
                     dew_point_spread_min, required_conditions_duration_hours,
                     precipitation_probability_max, cloud_cover_max,
                     is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 location.chat_id, location.name, location.latitude, location.longitude,
                 location.time_window_start, location.time_window_end,
-                location.temp_min, location.temp_max, location.humidity_max,
+                location.temp_min, location.humidity_max,
                 location.wind_speed_max, location.wind_directions, location.wind_direction_tolerance,
                 location.dew_point_spread_min, location.required_conditions_duration_hours,
                 location.precipitation_probability_max, location.cloud_cover_max,
@@ -230,7 +308,7 @@ class Database:
                 UPDATE locations SET
                     name = ?, latitude = ?, longitude = ?,
                     time_window_start = ?, time_window_end = ?,
-                    temp_min = ?, temp_max = ?, humidity_max = ?,
+                    temp_min = ?, humidity_max = ?,
                     wind_speed_max = ?, wind_directions = ?, wind_direction_tolerance = ?,
                     dew_point_spread_min = ?, required_conditions_duration_hours = ?,
                     precipitation_probability_max = ?, cloud_cover_max = ?,
@@ -239,7 +317,7 @@ class Database:
             """, (
                 location.name, location.latitude, location.longitude,
                 location.time_window_start, location.time_window_end,
-                location.temp_min, location.temp_max, location.humidity_max,
+                location.temp_min, location.humidity_max,
                 location.wind_speed_max, location.wind_directions, location.wind_direction_tolerance,
                 location.dew_point_spread_min, location.required_conditions_duration_hours,
                 location.precipitation_probability_max, location.cloud_cover_max,
@@ -259,7 +337,15 @@ class Database:
         """
         async with self._connection.cursor() as cursor:
             if hard_delete:
-                # Also delete related weather status and checks
+                # Delete in order: flyable_windows (via forecast_id) -> weather_forecasts -> status/checks -> location
+                await cursor.execute(
+                    "DELETE FROM flyable_windows WHERE location_id = ?",
+                    (location_id,)
+                )
+                await cursor.execute(
+                    "DELETE FROM weather_forecasts WHERE location_id = ?",
+                    (location_id,)
+                )
                 await cursor.execute(
                     "DELETE FROM weather_status WHERE location_id = ?",
                     (location_id,)
@@ -292,7 +378,6 @@ class Database:
             time_window_start=row["time_window_start"],
             time_window_end=row["time_window_end"],
             temp_min=row["temp_min"],
-            temp_max=row["temp_max"],
             humidity_max=row["humidity_max"],
             wind_speed_max=row["wind_speed_max"],
             wind_directions=row["wind_directions"],
@@ -412,6 +497,8 @@ class Database:
                         is_flyable = ?,
                         flyable_window_start = ?,
                         flyable_window_end = ?,
+                        active_windows_json = ?,
+                        last_forecast_id = ?,
                         consecutive_not_flyable_checks = ?,
                         last_notification_type = ?,
                         last_notification_at = ?,
@@ -421,6 +508,8 @@ class Database:
                     1 if status.is_flyable else 0,
                     status.flyable_window_start,
                     status.flyable_window_end,
+                    status.active_windows_json,
+                    status.last_forecast_id,
                     status.consecutive_not_flyable_checks,
                     status.last_notification_type,
                     status.last_notification_at,
@@ -433,13 +522,15 @@ class Database:
                     INSERT INTO weather_status (
                         location_id, date, is_flyable,
                         flyable_window_start, flyable_window_end,
+                        active_windows_json, last_forecast_id,
                         consecutive_not_flyable_checks,
                         last_notification_type, last_notification_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     status.location_id, status.date,
                     1 if status.is_flyable else 0,
                     status.flyable_window_start, status.flyable_window_end,
+                    status.active_windows_json, status.last_forecast_id,
                     status.consecutive_not_flyable_checks,
                     status.last_notification_type, status.last_notification_at
                 ))
@@ -465,6 +556,15 @@ class Database:
     
     def _row_to_weather_status(self, row: aiosqlite.Row) -> WeatherStatus:
         """Convert a database row to a WeatherStatus object."""
+        # Handle potentially missing new columns (migration safety)
+        active_windows = "[]"
+        last_forecast_id = None
+        try:
+            active_windows = row["active_windows_json"] or "[]"
+            last_forecast_id = row["last_forecast_id"]
+        except (KeyError, IndexError):
+            pass
+        
         return WeatherStatus(
             id=row["id"],
             location_id=row["location_id"],
@@ -472,6 +572,8 @@ class Database:
             is_flyable=bool(row["is_flyable"]),
             flyable_window_start=row["flyable_window_start"],
             flyable_window_end=row["flyable_window_end"],
+            active_windows_json=active_windows,
+            last_forecast_id=last_forecast_id,
             consecutive_not_flyable_checks=row["consecutive_not_flyable_checks"],
             last_notification_type=row["last_notification_type"],
             last_notification_at=row["last_notification_at"],
@@ -582,6 +684,189 @@ class Database:
             return await cursor.fetchone() is not None
     
     # =========================================================================
+    # Weather forecast operations
+    # =========================================================================
+    
+    async def create_weather_forecast(self, forecast: WeatherForecast) -> WeatherForecast:
+        """Create a new weather forecast record."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                INSERT INTO weather_forecasts (
+                    location_id, check_time, forecast_start, forecast_end,
+                    openweather_data, visualcrossing_data,
+                    total_flyable_windows, flyable_windows_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                forecast.location_id, forecast.check_time,
+                forecast.forecast_start, forecast.forecast_end,
+                forecast.openweather_data, forecast.visualcrossing_data,
+                forecast.total_flyable_windows, forecast.flyable_windows_json
+            ))
+            await self._connection.commit()
+            forecast.id = cursor.lastrowid
+            logger.debug(f"Created weather forecast id={forecast.id} for location {forecast.location_id}")
+            return forecast
+    
+    async def get_latest_forecast(self, location_id: int) -> Optional[WeatherForecast]:
+        """Get the most recent forecast for a location."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """SELECT * FROM weather_forecasts 
+                   WHERE location_id = ? 
+                   ORDER BY check_time DESC 
+                   LIMIT 1""",
+                (location_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return self._row_to_weather_forecast(row)
+            return None
+    
+    def _row_to_weather_forecast(self, row: aiosqlite.Row) -> WeatherForecast:
+        """Convert a database row to a WeatherForecast object."""
+        return WeatherForecast(
+            id=row["id"],
+            location_id=row["location_id"],
+            check_time=row["check_time"],
+            forecast_start=row["forecast_start"],
+            forecast_end=row["forecast_end"],
+            openweather_data=row["openweather_data"] or "{}",
+            visualcrossing_data=row["visualcrossing_data"] or "{}",
+            total_flyable_windows=row["total_flyable_windows"],
+            flyable_windows_json=row["flyable_windows_json"] or "[]",
+            created_at=row["created_at"]
+        )
+    
+    # =========================================================================
+    # Flyable window operations
+    # =========================================================================
+    
+    async def create_flyable_window(self, window: FlyableWindow) -> FlyableWindow:
+        """Create a new flyable window record."""
+        source = getattr(window, "source", "both")
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                INSERT INTO flyable_windows (
+                    location_id, forecast_id, date, start_hour, end_hour, duration_hours,
+                    source, avg_temp, avg_wind_speed, max_wind_speed, avg_humidity, max_precipitation_prob,
+                    notified, notified_at, cancelled, cancelled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                window.location_id, window.forecast_id, window.date,
+                window.start_hour, window.end_hour, window.duration_hours,
+                source,
+                window.avg_temp, window.avg_wind_speed, window.max_wind_speed,
+                window.avg_humidity, window.max_precipitation_prob,
+                1 if window.notified else 0, window.notified_at,
+                1 if window.cancelled else 0, window.cancelled_at
+            ))
+            await self._connection.commit()
+            window.id = cursor.lastrowid
+            return window
+    
+    async def get_active_flyable_windows(self, location_id: int) -> List[FlyableWindow]:
+        """Get all active (not cancelled) flyable windows for a location."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """SELECT * FROM flyable_windows 
+                   WHERE location_id = ? AND cancelled = 0 AND date >= date('now')
+                   ORDER BY date, start_hour""",
+                (location_id,)
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_flyable_window(row) for row in rows]
+    
+    async def get_notified_windows(self, location_id: int) -> List[FlyableWindow]:
+        """Get windows that have been notified about but not cancelled."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """SELECT * FROM flyable_windows 
+                   WHERE location_id = ? AND notified = 1 AND cancelled = 0 AND date >= date('now')
+                   ORDER BY date, start_hour""",
+                (location_id,)
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_flyable_window(row) for row in rows]
+    
+    async def mark_window_notified(self, window_id: int, notified_at: datetime) -> None:
+        """Mark a flyable window as notified."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE flyable_windows SET notified = 1, notified_at = ? WHERE id = ?",
+                (notified_at, window_id)
+            )
+            await self._connection.commit()
+    
+    async def cancel_windows_not_in_forecast(
+        self, 
+        location_id: int, 
+        current_windows: List[dict],
+        cancelled_at: datetime
+    ) -> List[FlyableWindow]:
+        """
+        Cancel windows that were previously notified but are no longer in the forecast.
+        
+        Args:
+            location_id: Location ID
+            current_windows: List of windows from current forecast {date, start_hour, end_hour}
+            cancelled_at: Timestamp of cancellation
+        
+        Returns:
+            List of cancelled windows
+        """
+        # Get all notified, non-cancelled windows
+        notified_windows = await self.get_notified_windows(location_id)
+        
+        cancelled = []
+        for window in notified_windows:
+            # Check if this window still exists in current forecast
+            still_exists = any(
+                cw.get("date") == window.date and
+                cw.get("start_hour") == window.start_hour and
+                cw.get("end_hour") == window.end_hour and
+                cw.get("source", "both") == getattr(window, "source", "both")
+                for cw in current_windows
+            )
+            
+            if not still_exists:
+                # Window is no longer in forecast - cancel it
+                async with self._connection.cursor() as cursor:
+                    await cursor.execute(
+                        "UPDATE flyable_windows SET cancelled = 1, cancelled_at = ? WHERE id = ?",
+                        (cancelled_at, window.id)
+                    )
+                    await self._connection.commit()
+                window.cancelled = True
+                window.cancelled_at = cancelled_at
+                cancelled.append(window)
+        
+        return cancelled
+    
+    def _row_to_flyable_window(self, row: aiosqlite.Row) -> FlyableWindow:
+        """Convert a database row to a FlyableWindow object."""
+        source = row["source"] if "source" in row.keys() else "both"
+        return FlyableWindow(
+            id=row["id"],
+            location_id=row["location_id"],
+            forecast_id=row["forecast_id"],
+            date=row["date"],
+            start_hour=row["start_hour"],
+            end_hour=row["end_hour"],
+            duration_hours=row["duration_hours"],
+            source=source,
+            avg_temp=row["avg_temp"],
+            avg_wind_speed=row["avg_wind_speed"],
+            max_wind_speed=row["max_wind_speed"],
+            avg_humidity=row["avg_humidity"],
+            max_precipitation_prob=row["max_precipitation_prob"],
+            notified=bool(row["notified"]),
+            notified_at=row["notified_at"],
+            cancelled=bool(row["cancelled"]),
+            cancelled_at=row["cancelled_at"],
+            created_at=row["created_at"]
+        )
+    
+    # =========================================================================
     # Utility operations
     # =========================================================================
     
@@ -593,8 +878,26 @@ class Database:
                    WHERE created_at < datetime('now', ?)""",
                 (f'-{days_to_keep} days',)
             )
+            deleted_checks = cursor.rowcount
+            
+            # Also cleanup old forecasts
+            await cursor.execute(
+                """DELETE FROM weather_forecasts 
+                   WHERE created_at < datetime('now', ?)""",
+                (f'-{days_to_keep} days',)
+            )
+            deleted_forecasts = cursor.rowcount
+            
+            # Cleanup old flyable windows (past dates)
+            await cursor.execute(
+                """DELETE FROM flyable_windows 
+                   WHERE date < date('now', ?)""",
+                (f'-{days_to_keep} days',)
+            )
+            deleted_windows = cursor.rowcount
+            
             await self._connection.commit()
-            deleted = cursor.rowcount
-            if deleted > 0:
-                logger.info(f"Cleaned up {deleted} old weather checks")
-            return deleted
+            total_deleted = deleted_checks + deleted_forecasts + deleted_windows
+            if total_deleted > 0:
+                logger.info(f"Cleaned up {deleted_checks} checks, {deleted_forecasts} forecasts, {deleted_windows} windows")
+            return total_deleted

@@ -79,7 +79,7 @@ TIMEZONE=Europe/Moscow
 POLLING_INTERVAL_MINUTES=30
 API_REQUEST_DELAY_SECONDS=2
 LOG_LEVEL=INFO
-DATABASE_PATH=data/weather_bot.db
+DATABASE_PATH=database/weather_bot.db
 
 # Optional: Global admin user IDs (comma-separated)
 ADMIN_USER_IDS=123456789
@@ -96,6 +96,14 @@ docker-compose logs -f
 
 # Остановка
 docker-compose down
+```
+
+**Права на БД при Docker:** если при удалении локации или других действиях появляется ошибка `sqlite3.OperationalError: attempt to write a readonly database`, на хосте выдайте права на каталог с БД пользователю контейнера (UID 1000):
+
+```bash
+sudo chown -R 1000:1000 ./database
+# На сервере, если проект в /srv/docker/TGWeatherBot:
+sudo chown -R 1000:1000 /srv/docker/TGWeatherBot/database
 ```
 
 ### 5. Запуск без Docker
@@ -149,7 +157,6 @@ python -m bot.main
       "time_window_start": 8,
       "time_window_end": 18,
       "temp_min": 5,
-      "temp_max": 35,
       "humidity_max": 85,
       "wind_speed_max": 8,
       "wind_directions": [0, 45, 315],
@@ -166,7 +173,6 @@ python -m bot.main
       "time_window_start": 9,
       "time_window_end": 17,
       "temp_min": 10,
-      "temp_max": 30,
       "humidity_max": 80,
       "wind_speed_max": 6,
       "wind_directions": [],
@@ -191,7 +197,6 @@ python -m bot.main
 | `time_window_start` | int | Начало временного окна (0-23) | 8 |
 | `time_window_end` | int | Конец временного окна (0-23) | 18 |
 | `temp_min` | float | Мин. температура °C | 5.0 |
-| `temp_max` | float | Макс. температура °C | 35.0 |
 | `humidity_max` | float | Макс. влажность % | 85.0 |
 | `wind_speed_max` | float | Макс. скорость ветра м/с | 8.0 |
 | `wind_directions` | array | Допустимые направления в градусах | [] (все) |
@@ -314,7 +319,7 @@ TGWeatherBot/
 | `POLLING_INTERVAL_MINUTES` | Интервал проверки в минутах | По умолчанию: 30 |
 | `API_REQUEST_DELAY_SECONDS` | Задержка между API запросами | По умолчанию: 2 |
 | `LOG_LEVEL` | Уровень логирования | По умолчанию: INFO |
-| `DATABASE_PATH` | Путь к файлу БД | По умолчанию: data/weather_bot.db |
+| `DATABASE_PATH` | Путь к файлу БД | По умолчанию: database/weather_bot.db |
 | `ADMIN_USER_IDS` | ID глобальных админов (через запятую) | Опционально |
 
 ## Устранение неполадок

@@ -41,15 +41,17 @@ class VisualCrossingClient:
         self, 
         latitude: float, 
         longitude: float,
-        days: int = 3
+        days: int = 15
     ) -> Optional[Dict[str, Any]]:
         """
         Get hourly weather forecast for a location.
         
+        Visual Crossing free tier supports up to 15 days of hourly forecast.
+        
         Args:
             latitude: Location latitude
             longitude: Location longitude
-            days: Number of days to forecast (1-15)
+            days: Number of days to forecast (1-15, default 15 for maximum range)
         
         Returns:
             Dictionary with hourly forecast data or None on error
@@ -60,9 +62,9 @@ class VisualCrossingClient:
             # Build location string
             location = f"{latitude},{longitude}"
             
-            # Date range: today to today+days
+            # Date range: today to today+days (max 15 days for free tier)
             today = datetime.utcnow().strftime("%Y-%m-%d")
-            end_date = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
+            end_date = (datetime.utcnow() + timedelta(days=min(days, 15))).strftime("%Y-%m-%d")
             
             url = f"{self.BASE_URL}/{location}/{today}/{end_date}"
             
@@ -117,24 +119,32 @@ class VisualCrossingClient:
                 # Convert epoch if available
                 timestamp = hour.get("datetimeEpoch", 0)
                 
+                temp = hour.get("temp", 0)
+                dew = hour.get("dew", 0)
+                visibility_km = hour.get("visibility", 10) or 10
+                conditions = hour.get("conditions", "") or ""
+                cloud_base_m = max(0, 125 * (temp - dew)) if temp > dew else 0
+                fog_probability = self._fog_probability(conditions, visibility_km)
+
                 hourly_item = {
                     "datetime": datetime_str,
                     "timestamp": timestamp,
-                    "temperature": hour.get("temp", 0),
-                    "feels_like": hour.get("feelslike", hour.get("temp", 0)),
+                    "temperature": temp,
+                    "feels_like": hour.get("feelslike", temp),
                     "humidity": hour.get("humidity", 0),
-                    "dew_point": hour.get("dew", 0),
-                    "wind_speed": hour.get("windspeed", 0) / 3.6,  # Convert km/h to m/s
+                    "dew_point": dew,
+                    "wind_speed": hour.get("windspeed", 0) / 3.6,
                     "wind_gust": hour.get("windgust", 0) / 3.6 if hour.get("windgust") else 0,
                     "wind_direction": hour.get("winddir", 0),
-                    "cloud_cover": hour.get("cloudcover", 0),
+                    "cloud_base_m": round(cloud_base_m, 0),
+                    "fog_probability": fog_probability,
                     "precipitation_probability": hour.get("precipprob", 0),
                     "precipitation_mm": hour.get("precip", 0) or 0,
                     "snow_mm": hour.get("snow", 0) or 0,
-                    "visibility": hour.get("visibility", 10),
+                    "visibility": visibility_km,
                     "uv_index": hour.get("uvindex", 0),
                     "pressure": hour.get("pressure", 1013),
-                    "weather_condition": hour.get("conditions", ""),
+                    "weather_condition": conditions,
                     "weather_icon": hour.get("icon", ""),
                 }
                 
@@ -151,24 +161,43 @@ class VisualCrossingClient:
             "fetched_at": datetime.utcnow().isoformat()
         }
     
+    @staticmethod
+    def _fog_probability(conditions: str, visibility_km: float) -> int:
+        """Вероятность тумана 0–100% по условиям и видимости."""
+        cond = (conditions or "").lower()
+        if any(x in cond for x in ("fog", "mist", "haze", "туман")):
+            return 100
+        if visibility_km and visibility_km < 1:
+            return 80
+        if visibility_km and visibility_km < 2:
+            return 50
+        return 0
+
     def _parse_current_conditions(self, current: Dict[str, Any]) -> Dict[str, Any]:
         """Parse current conditions from response."""
         if not current:
             return {}
-        
+        temp = current.get("temp", 0)
+        dew = current.get("dew", 0)
+        visibility_km = current.get("visibility", 10) or 10
+        conditions = current.get("conditions", "") or ""
+        cloud_base_m = max(0, 125 * (temp - dew)) if temp > dew else 0
+        fog_probability = self._fog_probability(conditions, visibility_km)
+
         return {
-            "temperature": current.get("temp", 0),
-            "feels_like": current.get("feelslike", current.get("temp", 0)),
+            "temperature": temp,
+            "feels_like": current.get("feelslike", temp),
             "humidity": current.get("humidity", 0),
-            "dew_point": current.get("dew", 0),
-            "wind_speed": current.get("windspeed", 0) / 3.6,  # Convert km/h to m/s
+            "dew_point": dew,
+            "wind_speed": current.get("windspeed", 0) / 3.6,
             "wind_gust": current.get("windgust", 0) / 3.6 if current.get("windgust") else 0,
             "wind_direction": current.get("winddir", 0),
-            "cloud_cover": current.get("cloudcover", 0),
-            "visibility": current.get("visibility", 10),
+            "cloud_base_m": round(cloud_base_m, 0),
+            "fog_probability": fog_probability,
+            "visibility": visibility_km,
             "uv_index": current.get("uvindex", 0),
             "pressure": current.get("pressure", 1013),
-            "weather_condition": current.get("conditions", ""),
+            "weather_condition": conditions,
         }
     
     async def get_current_weather(

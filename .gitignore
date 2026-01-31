@@ -75,7 +75,7 @@ venv.bak/
 *.db
 *.sqlite
 *.sqlite3
-data/
+database/
 
 # Logs
 *.log
@@ -85,3 +85,6 @@ logs/
 secrets/
 *.pem
 *.key
+
+# Deploy scripts (contain server-specific info)
+deploy.sh

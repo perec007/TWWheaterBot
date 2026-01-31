@@ -33,8 +33,6 @@ class Location:
         # Temperature settings (Celsius)
         temp_min: Minimum acceptable temperature
             Example: 5.0
-        temp_max: Maximum acceptable temperature
-            Example: 35.0
         
         # Humidity settings (percentage)
         humidity_max: Maximum acceptable humidity
@@ -79,7 +77,6 @@ class Location:
     
     # Temperature (Celsius)
     temp_min: float = 5.0
-    temp_max: float = 35.0
     
     # Humidity (%)
     humidity_max: float = 85.0
@@ -127,7 +124,6 @@ class Location:
             "time_window_start": self.time_window_start,
             "time_window_end": self.time_window_end,
             "temp_min": self.temp_min,
-            "temp_max": self.temp_max,
             "humidity_max": self.humidity_max,
             "wind_speed_max": self.wind_speed_max,
             "wind_directions": self.wind_directions,
@@ -214,6 +210,84 @@ _Обновлено: {updated_at}_"""
 
 
 @dataclass
+class FlyableWindow:
+    """
+    A flyable weather window in the forecast.
+    
+    Represents a continuous period where all weather conditions
+    are suitable for flying.
+    """
+    location_id: int
+    forecast_id: int  # Reference to the forecast that predicted this window
+    date: str  # YYYY-MM-DD format
+    start_hour: int  # 0-23
+    end_hour: int  # 0-23
+    duration_hours: int
+    
+    # Which source(s): "both", "openweather", "visualcrossing"
+    source: str = "both"
+    
+    # Weather summary for this window
+    avg_temp: Optional[float] = None
+    avg_wind_speed: Optional[float] = None
+    max_wind_speed: Optional[float] = None
+    avg_humidity: Optional[float] = None
+    max_precipitation_prob: Optional[float] = None
+    
+    # Notification tracking
+    notified: bool = False
+    notified_at: Optional[datetime] = None
+    cancelled: bool = False  # True if window was cancelled in later forecast
+    cancelled_at: Optional[datetime] = None
+    
+    # Metadata
+    created_at: Optional[datetime] = None
+    id: Optional[int] = None
+    
+    def to_display_string(self) -> str:
+        """Format window for display."""
+        return f"{self.date} {self.start_hour:02d}:00-{self.end_hour:02d}:00 ({self.duration_hours}ч)"
+
+
+@dataclass 
+class WeatherForecast:
+    """
+    Stored weather forecast for a location.
+    
+    Contains the full forecast data and list of detected flyable windows.
+    """
+    location_id: int
+    check_time: datetime
+    
+    # Forecast horizon
+    forecast_start: datetime
+    forecast_end: datetime
+    
+    # Raw API data
+    openweather_data: str = "{}"
+    visualcrossing_data: str = "{}"
+    
+    # Analysis summary
+    total_flyable_windows: int = 0
+    flyable_windows_json: str = "[]"  # JSON array of window info
+    
+    # Metadata
+    created_at: Optional[datetime] = None
+    id: Optional[int] = None
+    
+    def get_flyable_windows(self) -> List[dict]:
+        """Parse flyable windows from JSON."""
+        try:
+            return json.loads(self.flyable_windows_json)
+        except json.JSONDecodeError:
+            return []
+    
+    def set_flyable_windows(self, windows: List[dict]) -> None:
+        """Set flyable windows as JSON."""
+        self.flyable_windows_json = json.dumps(windows, ensure_ascii=False, default=str)
+
+
+@dataclass
 class WeatherStatus:
     """
     Current weather status for a location.
@@ -221,13 +295,15 @@ class WeatherStatus:
     
     Attributes:
         location_id: Reference to the Location
-        date: Date this status is for
-        is_flyable: Whether conditions are currently flyable
-        flyable_window_start: Start time of the flyable window (if flyable)
-        flyable_window_end: End time of the flyable window (if flyable)
+        date: Date this status is for (legacy, kept for compatibility)
+        is_flyable: Whether any flyable windows exist in forecast
+        
+        # Current forecast state
+        active_windows_json: JSON array of currently predicted flyable windows
+        last_forecast_id: ID of the last forecast used
         
         # For tracking status changes
-        consecutive_not_flyable_checks: Number of consecutive checks where conditions were not flyable
+        consecutive_not_flyable_checks: Number of consecutive checks with no flyable windows
         last_notification_type: Last notification sent ('flyable', 'not_flyable', or None)
         last_notification_at: When the last notification was sent
         
@@ -236,8 +312,14 @@ class WeatherStatus:
         updated_at: When this status was last updated
     """
     location_id: int
-    date: str  # YYYY-MM-DD format
+    date: str  # YYYY-MM-DD format (date of last check)
     is_flyable: bool = False
+    
+    # Current forecast windows
+    active_windows_json: str = "[]"  # JSON array of {date, start_hour, end_hour, duration}
+    last_forecast_id: Optional[int] = None
+    
+    # Legacy fields for compatibility
     flyable_window_start: Optional[str] = None  # HH:MM format
     flyable_window_end: Optional[str] = None  # HH:MM format
     
@@ -250,6 +332,17 @@ class WeatherStatus:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     id: Optional[int] = None
+    
+    def get_active_windows(self) -> List[dict]:
+        """Parse active windows from JSON."""
+        try:
+            return json.loads(self.active_windows_json)
+        except json.JSONDecodeError:
+            return []
+    
+    def set_active_windows(self, windows: List[dict]) -> None:
+        """Set active windows as JSON."""
+        self.active_windows_json = json.dumps(windows, ensure_ascii=False, default=str)
 
 
 @dataclass
